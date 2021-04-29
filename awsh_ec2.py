@@ -1,36 +1,493 @@
 #!/usr/bin/env python3
 
 import boto3
+import botocore.exceptions
+
+from PyInquirer import prompt
+import sys
+import json
+
+from awsh_cache import read_cache
+
+prefrred_regions = [
+   "us-east-1",
+    # "eu-west-1"
+        ]
+
+os_to_username = {
+            "Amazon Linux 2" : "ec2-user",
+            "CentOS": "centos",
+    }
+
+RUNNING_STATE_CODE = 16
+TERMINATED_STATE_CODE = 48
+
+def ip_str_to_int(ip_str):
+    ip_arr = ip_str.split('.')
+    ip = 0
+
+    for i in range(4):
+        block = int(ip_arr[i])
+        ip = ip + (block << (24 - i*8))
+
+    return ip
+
+def get_first_last_ips(cidr_block):
+    ipstr, cidr_range = cidr_block.split('/')
+
+    cidr_range = int(cidr_range)
+    num_ips = (1 << (32 - cidr_range)) - 1
+
+    start_ip = ip_str_to_int(ipstr)
+    last_ip = start_ip + num_ips
+
+    return start_ip, last_ip
+    print("start ip is", hex(start_ip))
+    print("last ip is", hex(last_ip))
+
+def ip_int_to_str(ip):
+    ip_arr = []
+    for i in range(4):
+        block = ip & 0xff
+        ip_arr.insert(0, str(block))
+        ip = ip >> 8
+
+    return '.'.join(ip_arr)
+
+def is_instance_running(cached_instance_entry):
+    """Gets an instance object as returned from Aws.get_instance_in_region()
+       and return if the instance is in a running state."""
+
+    return cached_instance_entry['state']['Code'] == RUNNING_STATE_CODE
+
+def _find_free_subnets(vpc, subnet_mask = 24, subnets_nr = 1):
+    """This function is suboptimal as it only searches for subnets that start at
+       A.B.C.0, which reduces the number of possible subnets we find. It was
+       done this way to make it easier for humans to spot different subnets"""
+
+    all_subnets = vpc.subnets.all()
+    ip_range = [get_first_last_ips(subnet.cidr_block) for subnet in all_subnets]
+    ip_range.sort(key = lambda ip_pair : ip_pair[0])
+
+    vpc_first_ip, vpc_last_ip = get_first_last_ips(vpc.cidr_block)
+
+    number_of_ips = (1 << (32 - subnet_mask)) - 1
+
+    current_start_ip = vpc_first_ip
+    returned_ips = []
+    while current_start_ip + number_of_ips < vpc_last_ip and len(returned_ips) < subnets_nr:
+
+        current_end_ip = current_start_ip + number_of_ips
+        
+        # remove existing subnets which end before the subnet we look for
+        while len(ip_range) > 0 and ip_range[0][1] < current_start_ip:
+            ip_range = ip_range[1:]
+
+        if len(ip_range) == 0 or current_end_ip < ip_range[0][0]:
+            returned_ips.append( (current_start_ip, current_end_ip) )
+
+        current_start_ip = current_end_ip + 1
+
+    if len(returned_ips) < subnets_nr:
+        return
+
+    ips_cidr = [ "{}/{}".format(ip_int_to_str(ip_pair[0]), subnet_mask) for ip_pair in returned_ips]
+    return ips_cidr
+
+def choose_from_list(qprompt, choices):
+
+    options = [
+            {
+                'type'      : 'list',
+                'name'      : 'question',
+                'message'   : qprompt,
+                'choices'   : choices,
+            }
+    ]
+
+    answer = prompt(options)
+
+    return answer['question']
+    print("You chose " + answer['instances'])
 
 class Aws:
-    def __init__ (self):
-        self.profile = "default"
 
-    def list_instance_in_region(self, region):
+    def __init__ (self):
+        self.instances = dict()
+        self.available_regions = None
+
+    def get_instance_in_region(self, region):
         """List instances in a given region"""
 
-        # ec2 = self.client
         ec2 = boto3.resource('ec2', region_name=region)
         all_instances = ec2.instances.all()
 
-        print("Listing instances in " + region)
-
+        ret_instances = dict()
         for instance in all_instances:
-            print("{id}: {key} {type} ({state})".format(
-                id = instance.instance_id,
-                key = instance.key_name,
-                type = instance.instance_type,
-                state = instance.state["Name"]))
+            # don't return terminated instances
+            if instance.state['Code'] == TERMINATED_STATE_CODE:
+                continue
 
-    def list_all_instances(self):
+            availability_zone = ''
+            interfaces = list()
+            for interface_attr in instance.network_interfaces_attribute:
+                card_id_index = 0
+                # on some instances the network card index is specified as well,
+                # while on others it's not
+                if 'NetworkCardIndex' in interface_attr['Attachment']:
+                    card_id_index = interface_attr['Attachment']['NetworkCardIndex']
+
+                interface = {
+                    'id'                    : interface_attr['NetworkInterfaceId'],
+                    'mac'                   : interface_attr['MacAddress'],
+                    'private_ip'            : interface_attr['PrivateIpAddress'],
+                    'subnet'                : interface_attr['SubnetId'],
+                    'vpc'                   : interface_attr['VpcId'],
+                    'security_group'        : interface_attr['Groups'],
+                    'delete_on_termination' : interface_attr['Attachment']['DeleteOnTermination'],
+                    'card_id_index'         : card_id_index,
+                    'description'           : interface_attr['Description'],
+                }
+                interfaces.append(interface)
+
+            # Get 'Name' tag of the instance. 'tags' attribute might not be
+            # defined
+            instance_name = ''
+            if instance.tags:
+                for tag in instance.tags:
+                    if tag['Key'] == 'Name':
+                        instance_name = tag['Value']
+
+            ret_instances[instance.id] = {
+                'name'              : instance_name,
+                'ena_support'       : instance.ena_support,
+                'state'             : instance.state,
+                'architecture'      : instance.architecture,
+                'ami_id'            : instance.image_id,
+                'ami_name'          : instance.image.name,
+                'key'               : instance.key_name,
+                'public_dns'        : instance.public_dns_name,
+                'public_ip'         : instance.public_ip_address,
+                'placement'         : instance.placement,
+                'instance_type'     : instance.instance_type,
+                'interfaces'        : interfaces,
+            }
+
+        return ret_instances
+
+    def query_instances_in_regions(self, regions):
+        for region in regions:
+            self.instances[region] = self.get_instance_in_region(region)
+
+        return self.instances
+
+    def query_all_instances(self):
         """List instances in all regions available to user.
            Caution: this operation might take a while"""
         session = boto3.Session()
-        available_regions = session.get_available_regions('ec2')
+
+        if not self.available_regions:
+            available_regions = session.get_available_regions('ec2')
+            self.available_regions = list(available_regions)
+
+        instances = self.query_instances_in_regions(self.available_regions)
+
+        return instances
+
+    def quary_preferred_regions(self):
+        return self.query_instances_in_regions(prefrred_regions)
+
+    def print_online_instances(self):
+        instances = self.instances
+        available_regions = self.available_regions
+
+        if not available_regions:
+            session = boto3.Session()
+            available_regions = session.get_available_regions('ec2')
+
         for region in available_regions:
-            self.list_instance_in_region(region)
+            print("Querying region: " + region)
+            self.query_instances_in_regions([region])
+            region_instances = instances[region]
 
-ec2 = Aws()
+            for instance_id in region_instances:
+                instance = region_instances[instance_id]
 
-# ec2.list_instances(region="eu-west-1")
-ec2.list_all_instances()
+                if instance["state"]["Code"] == RUNNING_STATE_CODE:
+                    print("\"{tags}\" {id}: {key} {type} ({state}) dns: {dns}".format(
+                        tags = instance["name"],
+                        id = instance_id,
+                        key = instance["key"],
+                        type = instance["instance_type"],
+                        state = instance["state"]["Name"],
+                        dns = instance["public_dns"]))
+
+    def get_subnet_all_pass_sec_group(self, subnet):
+        """find a security group that passes all traffic,
+           if it doesn't exist, create one"""
+
+        all_pass_sec_group_name_params = {
+                'Description' : 'Pass all traffic',
+                'GroupName' : 'pass_all_traffic',
+                }
+        all_pass_sec_group_access_params = {
+                'IpPermissions' : [
+                    {
+                        'IpProtocol' : '-1',
+                        'IpRanges': [
+                            {
+                                'CidrIp': '0.0.0.0/0',
+                                'Description': 'all_ipv4'
+                                },
+                            ],
+                        'Ipv6Ranges': [
+                            {
+                                'CidrIpv6': '::/0',
+                                'Description': 'all_ipv6'
+                                },
+                            ],
+                        }
+                    ]
+                }
+
+        vpc = subnet.vpc
+        sec_groups = vpc.security_groups
+        all_pass_sec_groups = sec_groups.filter(
+                GroupNames=[
+                    'pass_all_traffic'
+                    ],
+                )
+        try:
+            all_pass_sec_group = list(all_pass_sec_groups)[0]
+        except:
+            try:
+                # the above command would fail if such group doesn't exist
+                all_pass_sec_group = vpc.create_security_group(**all_pass_sec_group_name_params)
+                # only authorise ingree. egress passes all traffic by default
+                all_pass_sec_group.authorize_ingress(**all_pass_sec_group_access_params)
+            except:
+                all_pass_sec_group = None
+
+        return all_pass_sec_group
+
+    def create_interface(self, name, subnet):
+
+        print("Creating interface", name)
+
+        all_pass_sec_group = self.get_subnet_all_pass_sec_group(subnet)
+
+        subnet.create_network_interface(
+                Description         = name,
+                Groups              = [
+
+                    all_pass_sec_group.id,
+                    # 'sg-14057963' # default for eu-west-1, passes all traffic
+                    # 'sg-2cdc3c72', # default for us-east-1, passes all traffic
+                    # 'sg-025236cc42a95f96c', # all_traffic
+                ],
+                TagSpecifications   = [
+                    {
+                        'ResourceType'  : 'network-interface',
+                        'Tags'          : [
+                            { 
+                            'Key'   : 'Name',
+                            'Value' : name,
+                            }
+                        ],
+                    },
+                ],
+                )
+
+    def detach_private_enis(self, region, instance_id, use_cache = False):
+        ec2 = boto3.resource('ec2', region_name=region)
+        instance = ec2.Instance(instance_id)
+        
+        enis_to_detach = list()
+        for interface_attr in instance.network_interfaces_attribute:
+            if not interface_attr['Attachment']['DeleteOnTermination']:
+                enis_to_detach.append(interface_attr['NetworkInterfaceId'])
+
+        if not len(enis_to_detach):
+            return
+
+        for eni_id in enis_to_detach:
+            eni = ec2.NetworkInterface(eni_id)
+            eni.detach()
+
+    # def start_instance(self, region, instance_id, use_cache = False):
+        # if not use_cache:
+            # print("Currently only supported in cache")
+            # return
+        # else:
+            
+            # instance_key        = 
+            # instance_username   = 
+            # instance_dns        =
+
+
+    def create_subnet(self, region, az, name, vpc = None):
+        available_vpcs = 3
+        ec2 = boto3.resource('ec2', region_name=region)
+
+        if vpc:
+            # supporting it might be trickier than what one might think
+            # Creating an empty subnet requires to find an address range which
+            # doesn't intersects with any other subnet. When we have several
+            # LPCs this requires to search in subnets belonging to both
+            print("Function doesn't support VPC argument")
+            return
+        else:
+            vpc = list(ec2.vpcs.all())[0]
+            print("VPC not specified, choosing first one: {}".format(vpc.id))
+
+        subnets = _find_free_subnets(vpc)
+        if not subnets:
+            print("Failed to find 1 available subnet")
+            return
+
+        print("Gonna create this subnet:", subnets[0], "in az", az)
+        print("subnets name would be", name)
+
+        subnet = ec2.create_subnet(
+                AvailabilityZone    = az,
+                CidrBlock           = subnets[0],
+                VpcId               = vpc.id,
+                TagSpecifications   = [
+                    {
+                        'ResourceType'  : 'subnet',
+                        'Tags'          : [
+                            { 
+                            'Key'   : 'Name',
+                            'Value' : name,
+                            }
+                        ],
+                    },
+                ],
+        )
+        
+        return subnet
+
+    def connect_eni_to_instance(self, region):
+        running_instances = self.get_instance_in_region(region)
+
+        instance_choices = list()
+        for key in running_instances.keys():
+            name = running_instances[key]['name']
+            size = running_instances[key]['instance_type']
+
+            instance_choices.append('{} {} {}'.format(key, name, size))
+
+        if not instance_choices:
+            print("No running instances")
+            return
+
+        instance = choose_from_list('Choose instance to attach interface to', instance_choices)
+        instance_tuple = instance.split()
+
+        chosen_instance_id = instance_tuple[0]
+        instance_az = running_instances[chosen_instance_id]['placement']['AvailabilityZone']
+        print("You chose", chosen_instance_id, "from az", instance_az)
+
+        ec2 = boto3.resource('ec2', region_name=region)
+
+        available_interfaces = ec2.network_interfaces.filter(
+                    Filters=[
+                        {
+                            'Name': 'availability-zone',
+                            'Values': [
+                                instance_az,
+                            ]
+                        },
+                        {
+                            'Name': 'status',
+                            'Values': [
+                                'available',
+                            ]
+                        },
+                    ],
+            )
+
+        interfaces_choices = list()
+        for interface in available_interfaces:
+            eni_id = interface.id
+            eni_description = interface.description
+
+            interfaces_choices.append('{} {}'.format(eni_id, eni_description))
+        
+        if not interfaces_choices:
+            print("No available interface, please create some")
+            return
+
+        interface = choose_from_list('Choose an interface to attach to the interface', interfaces_choices)
+        interface_tuple = interface.split()
+
+        eni_id = interface_tuple[0]
+
+        print("You chose to attach interface", eni_id)
+
+        eni = ec2.NetworkInterface(eni_id)
+        eni.attach(
+            DeviceIndex = 1,
+            InstanceId = chosen_instance_id,
+            NetworkCardIndex = 0
+            )
+
+    def terminate_instance(self, instance_id, region):
+        ec2 = boto3.resource('ec2', region_name=region)
+        
+        instance = ec2.Instance(instance_id)
+        try:
+            instance.terminate()
+        except botocore.exceptions.ClientError as error:
+            if error.response['Error']['Code'] == 'InvalidInstanceID.NotFound':
+                print("No client with instance id", instance_id, "exists in region", region)
+            else:
+                raise error
+
+    def start_instance(self, instance_id, region, wait_to_start=True):
+        ec2 = boto3.resource('ec2', region_name=region)
+        
+        instance = ec2.Instance(instance_id)
+        try:
+            # TODO: this function has use_cache option which isn't implemented.
+            # After it would be please make it use the cache
+            self.detach_private_enis(region=region, instance_id=instance_id)
+            instance.start()
+            if wait_to_start:
+                instance.wait_until_running()
+        except botocore.exceptions.ClientError as error:
+            if error.response['Error']['Code'] == 'InvalidInstanceID.NotFound':
+                print("No client with instance id", instance_id, "exists in region", region)
+            else:
+                raise error
+
+    def stop_instance(self, instance_id, region, wait_until_stop=False):
+        ec2 = boto3.resource('ec2', region_name=region)
+        
+        instance = ec2.Instance(instance_id)
+        try:
+            instance.stop()
+            if wait_until_stop:
+                instance.wait_until_stopped()
+        except botocore.exceptions.ClientError as error:
+            if error.response['Error']['Code'] == 'InvalidInstanceID.NotFound':
+                print("No client with instance id", instance_id, "exists in region", region)
+            else:
+                raise error
+
+if __name__ == '__main__':
+
+    ec2 = Aws()
+
+    # ec2.detach_private_enis('us-east-1', 'i-05f612a1327a46681')
+    # subnet = ec2.create_subnet('eu-west-1', 'eu-west-1c', 'subnet-c-1')
+    # ec2.create_interface('testing-c1-i1', subnet)
+    # ec2.create_interface('testing-c1-i2', subnet)
+
+    # ec2.connect_eni_to_instance('eu-west-1')
+
+    # ec2.start_instance('i-0cfacd0f2ea3ef017', 'us-east-1')
+    # ec2.query_all_instances()
+    # print(json.dumps(ec2.quary_preferred_regions(), indent = 4))
+    # print(json.dumps(ec2.query_all_instances(), indent=4))
+    # ec2.print_online_instances()
