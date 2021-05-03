@@ -78,8 +78,11 @@ class awsh_server:
 
             print('aws_server: asked to query region', request[1])
 
-            instances = self.ec2.query_instances_in_regions([region])
-            reply = json.dumps(instances[region])
+            regions = self.ec2.query_instances_in_regions([region])
+            # TODO: Such accesses to region are error prone
+            # You need to define a set of functions for ec2 module which returns
+            # the information for each such field
+            reply = json.dumps(regions[region]['instances'])
 
             # TODO: this approach isn't robust enough and I don't like it. We
             # hold a lock for a whole file when we want to update a single
@@ -90,7 +93,12 @@ class awsh_server:
             # ask it to hold the persistent data ?
             
             info = read_cache()
-            info['instances'][region] = instances[region]
+            if not 'regions' in info:
+                info['regions'] = dict()
+            if not region in info['regions']:
+                info['regions'][region] = dict()
+
+            info['regions'][region]['instances'] = regions[region]['instances']
             # note that this might fail
             update_cache(info)
         elif request[0] == str(awsh_server_commands.START_INSTANCE):
@@ -134,7 +142,7 @@ class awsh_server:
 
             if self.is_record_old_enough(ts_dict, 'instance_in_all_regions'):
                 print("querying all instances", end=' - ', flush = True)
-                info['instances'] = ec2.query_all_instances()
+                info['regions'] = ec2.query_all_instances()
                 ts_dict['instance_in_all_regions'] = self.current_time.timestamp()
                 ts_dict['instance_in_pref_regions'] = self.current_time.timestamp()
                 print('done')
@@ -143,11 +151,11 @@ class awsh_server:
 
                 preferred_instances = ec2.quary_preferred_regions()
 
-                if not 'instances' in info:
-                    info['instances'] = dict()
+                if not 'regions' in info:
+                    info['regions'] = dict()
 
                 for region in preferred_instances.keys():
-                    info['instances'][region] = preferred_instances[region]
+                    info['regions'][region]['instances'] = preferred_instances[region]['instances']
 
                 ts_dict['instance_in_pref_regions'] = self.current_time.timestamp()
                 print('done')

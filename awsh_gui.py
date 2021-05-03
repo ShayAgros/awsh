@@ -21,7 +21,7 @@ class aws_gui(QWidget):
 
     is_alive = True
 
-    def __init__(self, instances):
+    def __init__(self, regions):
         super().__init__()
 
         def loop_server():
@@ -41,7 +41,7 @@ class aws_gui(QWidget):
         wait_thread = threading.Thread(target = loop_server)
         wait_thread.start()
 
-        self.create_instances_views(instances)
+        self.create_instances_views(regions)
         region = 'eu-west-1'
 
         self.setLayout(self.viewStackedLayout)
@@ -50,18 +50,31 @@ class aws_gui(QWidget):
         self.setWindowTitle("Second Window")
         self.show()
 
-    def create_instances_views(self, all_instances):
+    def create_instances_views(self, all_regions):
         region_views = dict()
         viewStackedLayout = QStackedLayout()
 
+        # use a list to affect the order in which regions are added to the
+        # stacked layout
+        stacked_views = list()
+
         region_with_online_ix = 0
 
-        for region in all_instances:
-            if not len(all_instances[region]):
+        for region in all_regions:
+            if not len(all_regions[region]['instances']):
                 continue
 
-            region_views[region] = instances_view(region, instances=all_instances[region], req_client=self.req_client, parent=self)
-            viewStackedLayout.addWidget(region_views[region])
+            instances = all_regions[region]['instances']
+            has_running_instances = all_regions[region]['has_running_instances']
+
+            region_views[region] = instances_view(region, instances=instances, req_client=self.req_client, parent=self)
+            if has_running_instances:
+                stacked_views.insert(0, region_views[region])
+            else:
+                stacked_views.append(region_views[region])
+
+        for sv in stacked_views:
+            viewStackedLayout.addWidget(sv)
 
         self.region_views = region_views
         self.viewStackedLayout = viewStackedLayout
@@ -137,6 +150,6 @@ if __name__ == '__main__':
 
     info = read_cache()
 
-    window = aws_gui(info['instances'])
+    window = aws_gui(info['regions'])
     # window.show()
     sys.exit(app.exec_())

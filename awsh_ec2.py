@@ -113,20 +113,23 @@ def choose_from_list(qprompt, choices):
 class Aws:
 
     def __init__ (self):
-        self.instances = dict()
-        self.available_regions = None
+        self.regions = dict()
+        self.available_regions_list = None
 
     def get_instance_in_region(self, region):
         """List instances in a given region"""
 
         ec2 = boto3.resource('ec2', region_name=region)
         all_instances = ec2.instances.all()
+        has_running_instances = False
 
         ret_instances = dict()
         for instance in all_instances:
             # don't return terminated instances
             if instance.state['Code'] == TERMINATED_STATE_CODE:
                 continue
+            if instance.state['Code'] == RUNNING_STATE_CODE:
+                has_running_instances = True
 
             availability_zone = ''
             interfaces = list()
@@ -173,42 +176,47 @@ class Aws:
                 'interfaces'        : interfaces,
             }
 
-        return ret_instances
+        return ret_instances, has_running_instances
 
     def query_instances_in_regions(self, regions):
         for region in regions:
-            self.instances[region] = self.get_instance_in_region(region)
+            if not region in self.regions:
+                self.regions[region] = dict()
 
-        return self.instances
+            self.regions[region]['instances'], has_running_instances = self.get_instance_in_region(region)
+            self.regions[region]['has_running_instances'] = has_running_instances
+
+        return self.regions
 
     def query_all_instances(self):
         """List instances in all regions available to user.
            Caution: this operation might take a while"""
         session = boto3.Session()
 
-        if not self.available_regions:
+        if not self.available_regions_list:
             available_regions = session.get_available_regions('ec2')
-            self.available_regions = list(available_regions)
+            self.available_regions_list = list(available_regions)
 
-        instances = self.query_instances_in_regions(self.available_regions)
+        regions = self.query_instances_in_regions(self.available_regions_list)
 
-        return instances
+        return regions
 
     def quary_preferred_regions(self):
         return self.query_instances_in_regions(prefrred_regions)
 
     def print_online_instances(self):
-        instances = self.instances
-        available_regions = self.available_regions
+        regions = self.regions
+        available_regions = available_regions_list
 
         if not available_regions:
             session = boto3.Session()
             available_regions = session.get_available_regions('ec2')
+            self.available_regions_list = available_regions
 
         for region in available_regions:
             print("Querying region: " + region)
             self.query_instances_in_regions([region])
-            region_instances = instances[region]
+            region_instances = regions[region]['instances']
 
             for instance_id in region_instances:
                 instance = region_instances[instance_id]
@@ -270,7 +278,13 @@ class Aws:
 
         return all_pass_sec_group
 
-    def create_interface(self, name, subnet):
+    def create_interface(self, name, subnet, region = None):
+
+        if isinstance(subnet, str):
+            if not region:
+                raise SystemExit("create_interface: passing subnet id argument requires to specify region")
+            ec2 = boto3.resource('ec2', region_name=region)
+            subnet = ec2.Subnet(subnet)
 
         print("Creating interface", name)
 
@@ -480,7 +494,9 @@ if __name__ == '__main__':
     ec2 = Aws()
 
     # ec2.detach_private_enis('us-east-1', 'i-05f612a1327a46681')
-    # subnet = ec2.create_subnet('eu-west-1', 'eu-west-1c', 'subnet-c-1')
+    # subnet = ec2.create_subnet('us-west-2', 'us-west-2c', 'subnet-c-1')
+    # subnet = "subnet-05b50406575c83879"
+    # ec2.create_interface('testing-c2-i4', subnet, region='us-west-2')
     # ec2.create_interface('testing-c1-i1', subnet)
     # ec2.create_interface('testing-c1-i2', subnet)
 
@@ -489,5 +505,5 @@ if __name__ == '__main__':
     # ec2.start_instance('i-0cfacd0f2ea3ef017', 'us-east-1')
     # ec2.query_all_instances()
     # print(json.dumps(ec2.quary_preferred_regions(), indent = 4))
-    # print(json.dumps(ec2.query_all_instances(), indent=4))
+    print(json.dumps(ec2.query_all_instances(), indent=4))
     # ec2.print_online_instances()

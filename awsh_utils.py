@@ -5,6 +5,13 @@ LOGIN_FILE=INSTANCES_DIR + '/saved_logins'
 
 KEYS_DIR = expanduser("~") + '/keys'
 
+def clean_saved_logins():
+    open(LOGIN_FILE, 'w').close()
+
+# TODO: maybe add an option to insert an entry from the start ? This would allow
+# to add new entries w/o deleting saved_login content each time (what would you
+# do it the entry is already there ? Move it to be the first entry ? is it
+# likely to matter if you leave it there ?)
 def find_in_saved_logins(server, username = None, key = None, add_if_missing = False):
     if len(server) == 0:
         return '-'
