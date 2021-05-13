@@ -7,8 +7,6 @@ from PyInquirer import prompt
 import sys
 import json
 
-from awsh_cache import read_cache
-
 prefrred_regions = [
    "us-east-1",
     # "eu-west-1"
@@ -116,11 +114,20 @@ class Aws:
         self.regions = dict()
         self.available_regions_list = None
 
-    def get_instance_in_region(self, region):
-        """List instances in a given region"""
+    def get_instance_in_region(self, region, instance_id = None):
+        """List instances in a given region, if instance_id is specified, query
+        only this specific instance data"""
 
         ec2 = boto3.resource('ec2', region_name=region)
-        all_instances = ec2.instances.all()
+        if not instance_id:
+            all_instances = ec2.instances.all()
+        else:
+            all_instances = ec2.instances.filter(
+                        InstanceIds=[
+                            instance_id,
+                        ],
+                    )
+
         has_running_instances = False
 
         ret_instances = dict()
@@ -163,6 +170,7 @@ class Aws:
 
             ret_instances[instance.id] = {
                 'name'              : instance_name,
+                'id'                : instance.id,
                 'ena_support'       : instance.ena_support,
                 'state'             : instance.state,
                 'architecture'      : instance.architecture,
@@ -174,19 +182,19 @@ class Aws:
                 'placement'         : instance.placement,
                 'instance_type'     : instance.instance_type,
                 'interfaces'        : interfaces,
+                'num_interfaces'    : len(interfaces),
             }
 
         return ret_instances, has_running_instances
 
     def query_instances_in_regions(self, regions):
+        instances = dict()
+        has_running_instances = dict()
+
         for region in regions:
-            if not region in self.regions:
-                self.regions[region] = dict()
+            instances[region], has_running_instances[region] = self.get_instance_in_region(region)
 
-            self.regions[region]['instances'], has_running_instances = self.get_instance_in_region(region)
-            self.regions[region]['has_running_instances'] = has_running_instances
-
-        return self.regions
+        return instances, has_running_instances
 
     def query_all_instances(self):
         """List instances in all regions available to user.
@@ -197,9 +205,7 @@ class Aws:
             available_regions = session.get_available_regions('ec2')
             self.available_regions_list = list(available_regions)
 
-        regions = self.query_instances_in_regions(self.available_regions_list)
-
-        return regions
+        return self.query_instances_in_regions(self.available_regions_list)
 
     def quary_preferred_regions(self):
         return self.query_instances_in_regions(prefrred_regions)
@@ -328,16 +334,55 @@ class Aws:
             eni = ec2.NetworkInterface(eni_id)
             eni.detach()
 
-    # def start_instance(self, region, instance_id, use_cache = False):
-        # if not use_cache:
-            # print("Currently only supported in cache")
-            # return
-        # else:
-            
-            # instance_key        = 
-            # instance_username   = 
-            # instance_dns        =
+    def _get_interface_in_region(self, region):
+        ec2 = boto3.resource('ec2', region_name=region)
+        all_interfaces = ec2.network_interfaces.all()
 
+        ret_interfaces = dict()
+        
+        for interface in all_interfaces:
+
+            interface_name = ''
+            if interface.tag_set:
+                for tag in interface.tag_set:
+                    if tag['Key'] == 'Name':
+                        interface_name = tag['Value']
+
+            ret_interfaces[interface.id] = {
+                    'name'              : interface_name, 
+                    'id'                : interface.id,
+                    'az'                : interface.availability_zone,
+                    'mac_address'       : interface.mac_address,
+                    'groups'            : interface.groups,
+                    'private_id'        : interface.private_ip_address,
+                    'status'            : interface.status,
+                    'subnet_id'         : interface.subnet_id,
+                    'source_dest_check' : interface.source_dest_check,
+                    'description'       : interface.description,
+                    'availability_zone' : interface.availability_zone,
+                    }
+
+        return ret_interfaces
+
+    def query_interfaces_in_regions(self, regions):
+        interfaces = dict()
+        for region in regions:
+                interfaces[region] = self._get_interface_in_region(region)
+
+        return interfaces
+
+    def query_all_interfaces(self):
+        """List interfaces in all regions available to user.
+           Caution: this operation might take a while"""
+        session = boto3.Session()
+
+        if not self.available_regions_list:
+            available_regions = session.get_available_regions('ec2')
+            self.available_regions_list = list(available_regions)
+
+        regions = self.query_interfaces_in_regions(self.available_regions_list)
+
+        return regions
 
     def create_subnet(self, region, az, name, vpc = None):
         available_vpcs = 3
@@ -381,70 +426,81 @@ class Aws:
         
         return subnet
 
-    def connect_eni_to_instance(self, region):
+    def connect_eni_to_instance(self, region, device_index, network_card_index = 0, instance_id = None, eni_id = None):
         running_instances = self.get_instance_in_region(region)
-
-        instance_choices = list()
-        for key in running_instances.keys():
-            name = running_instances[key]['name']
-            size = running_instances[key]['instance_type']
-
-            instance_choices.append('{} {} {}'.format(key, name, size))
-
-        if not instance_choices:
-            print("No running instances")
-            return
-
-        instance = choose_from_list('Choose instance to attach interface to', instance_choices)
-        instance_tuple = instance.split()
-
-        chosen_instance_id = instance_tuple[0]
-        instance_az = running_instances[chosen_instance_id]['placement']['AvailabilityZone']
-        print("You chose", chosen_instance_id, "from az", instance_az)
 
         ec2 = boto3.resource('ec2', region_name=region)
 
-        available_interfaces = ec2.network_interfaces.filter(
-                    Filters=[
-                        {
-                            'Name': 'availability-zone',
-                            'Values': [
-                                instance_az,
-                            ]
-                        },
-                        {
-                            'Name': 'status',
-                            'Values': [
-                                'available',
-                            ]
-                        },
-                    ],
-            )
+        if not instance_id:
+            instance_choices = list()
+            for key in running_instances.keys():
+                name = running_instances[key]['name']
+                size = running_instances[key]['instance_type']
 
-        interfaces_choices = list()
-        for interface in available_interfaces:
-            eni_id = interface.id
-            eni_description = interface.description
+                instance_choices.append('{} {} {}'.format(key, name, size))
 
-            interfaces_choices.append('{} {}'.format(eni_id, eni_description))
-        
-        if not interfaces_choices:
-            print("No available interface, please create some")
-            return
+            if not instance_choices:
+                print("No running instances")
+                return
 
-        interface = choose_from_list('Choose an interface to attach to the interface', interfaces_choices)
-        interface_tuple = interface.split()
+            instance = choose_from_list('Choose instance to attach interface to', instance_choices)
+            instance_tuple = instance.split()
 
-        eni_id = interface_tuple[0]
+            instance_id = instance_tuple[0]
+
+        if not eni_id:
+            instance_az = running_instances[instance_id]['placement']['AvailabilityZone']
+            print("You chose", instance_id, "from az", instance_az)
+
+
+            available_interfaces = ec2.network_interfaces.filter(
+                        Filters=[
+                            {
+                                'Name': 'availability-zone',
+                                'Values': [
+                                    instance_az,
+                                ]
+                            },
+                            {
+                                'Name': 'status',
+                                'Values': [
+                                    'available',
+                                ]
+                            },
+                        ],
+                )
+
+            interfaces_choices = list()
+            for interface in available_interfaces:
+                eni_id = interface.id
+                eni_description = interface.description
+
+                interfaces_choices.append('{} {}'.format(eni_id, eni_description))
+            
+            if not interfaces_choices:
+                print("No available interface, please create some")
+                return
+
+            interface = choose_from_list('Choose an interface to attach to the interface', interfaces_choices)
+            interface_tuple = interface.split()
+
+            eni_id = interface_tuple[0]
 
         print("You chose to attach interface", eni_id)
 
         eni = ec2.NetworkInterface(eni_id)
         eni.attach(
-            DeviceIndex = 1,
-            InstanceId = chosen_instance_id,
-            NetworkCardIndex = 0
+            DeviceIndex = device_index,
+            InstanceId = instance_id,
+            NetworkCardIndex = network_card_index
             )
+
+        # TODO: do we desire to update the instance's properties ? Should it
+        # really happen in this function ?
+        # instances = self.get_instance_in_region(region, instance_id=instance_id)
+        # if not region in self.regions:
+            # self.regions[region] = dict()
+        # self.regions[region]['instances'].update(instances)
 
     def terminate_instance(self, instance_id, region):
         ec2 = boto3.resource('ec2', region_name=region)
@@ -494,16 +550,18 @@ if __name__ == '__main__':
     ec2 = Aws()
 
     # ec2.detach_private_enis('us-east-1', 'i-05f612a1327a46681')
-    # subnet = ec2.create_subnet('us-west-2', 'us-west-2c', 'subnet-c-1')
+    # subnet = ec2.create_subnet('us-west-2', 'us-west-2d', 'subnet-d-1')
     # subnet = "subnet-05b50406575c83879"
     # ec2.create_interface('testing-c2-i4', subnet, region='us-west-2')
-    # ec2.create_interface('testing-c1-i1', subnet)
-    # ec2.create_interface('testing-c1-i2', subnet)
+    # ec2.create_interface('testing-d1-i1', subnet)
+    # ec2.create_interface('testing-d1-i2', subnet)
+    # ec2.create_interface('testing-d1-i3', subnet)
+    # print(json.dumps(ec2._get_interface_in_region('us-west-2'), indent=4))
 
     # ec2.connect_eni_to_instance('eu-west-1')
 
     # ec2.start_instance('i-0cfacd0f2ea3ef017', 'us-east-1')
     # ec2.query_all_instances()
-    # print(json.dumps(ec2.quary_preferred_regions(), indent = 4))
-    print(json.dumps(ec2.query_all_instances(), indent=4))
+    print(json.dumps(ec2.quary_preferred_regions(), indent = 4))
+    # print(json.dumps(ec2.query_all_instances(), indent=4))
     # ec2.print_online_instances()

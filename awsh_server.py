@@ -9,23 +9,35 @@ import json
 from pid import PidFile
 
 from awsh_ec2 import Aws
-from awsh_cache import update_cache, read_cache
+from awsh_cache import awsh_cache
 from awsh_req_resp_server import start_requests_server, awsh_req_server
 
 # TODO: separate the request handler and the synchronous update into two
 # functions. They don't share anything in common except shared access to boto3
 
 intervals = {
-    "instance_in_pref_regions": 3600 * 1,
-    "instance_in_all_regions" : 3600 * 3,
+    "instance_in_pref_regions"  : 3600 * 1,
+    "instance_in_all_regions"   : 3600 * 3,
+    "interfaces_in_all_regions" : 3600 * 24 * 2,
     # "all_amis": 3600 * 24,
     # "all_instance_size": 3600 * 24, 
     }
+
+def update(dict1, dict2):
+    # Update all new/changes entries in dict2
+    for k, v in dict2.items():
+        if isinstance(v, dict):
+            dict1[k] = update(dict1.get(k, {}), v)
+        else:
+            dict1[k] = v
+
+    return dict1
 
 class awsh_server_commands():
     QUERY_REGION=1
     START_INSTANCE=2
     STOP_INSTANCE=3
+    CONNECT_ENI=4
 
 server_stop = False
 
@@ -43,15 +55,10 @@ class awsh_server:
         self.query_info_running = False
         self.ec2 = Aws()
 
-    def is_record_old_enough(self, ts_dict, record):
-        if not record in ts_dict:
-            return True
-        
-        ts = ts_dict[record]
-        prev_time = datetime.fromtimestamp(ts)
+        # the cache would hold the server's state
+        self.cache = awsh_cache()
+        self.cache.read_cache()
 
-        return (self.current_time - prev_time).seconds >= intervals[record]
-    
     def start_requests_server(self):
         if not self.req_resp_server_running:
             self.req_resp_server_running = True
@@ -78,29 +85,14 @@ class awsh_server:
 
             print('aws_server: asked to query region', request[1])
 
-            regions = self.ec2.query_instances_in_regions([region])
-            # TODO: Such accesses to region are error prone
-            # You need to define a set of functions for ec2 module which returns
-            # the information for each such field
-            reply = json.dumps(regions[region]['instances'])
+            instances, has_running_instances = self.ec2.query_instances_in_regions([region])
+            reply = json.dumps(instances[region])
 
-            # TODO: this approach isn't robust enough and I don't like it. We
-            # hold a lock for a whole file when we want to update a single
-            # region (though does it really matter if we hold the lock for a
-            # single entry or the whole file performance wise?)
-            #
-            # Idea: since you won't to avoid concurrent ec2 updates maybe we can
-            # ask it to hold the persistent data ?
-            
-            info = read_cache()
-            if not 'regions' in info:
-                info['regions'] = dict()
-            if not region in info['regions']:
-                info['regions'][region] = dict()
+            cache = self.cache
 
-            info['regions'][region]['instances'] = regions[region]['instances']
-            # note that this might fail
-            update_cache(info)
+            cache.set_instances(regions)
+            cache.set_is_running_instances(has_running_instances)
+
         elif request[0] == str(awsh_server_commands.START_INSTANCE):
             region = request[1]
             instance_id = request[2]
@@ -114,6 +106,13 @@ class awsh_server:
 
             print('aws_server: stopping instance {} in region {}'.format(instance_id, region))
             self.ec2.stop_instance(instance_id, region, wait_until_stop=False)
+        elif request[0] == str(awsh_server_commands.CONNECT_ENI):
+            region      = request[1]
+            instance_id = request[2]
+            eni         = request[3]
+            index       = int(request[4])
+
+            self.ec2.connect_eni_to_instance(region, index, instance_id=instance_id, eni_id=eni)
         else:
             print('aws_server: unknown command', request[0])
 
@@ -124,50 +123,60 @@ class awsh_server:
 
         while not server_stop:
             
-            time.sleep(1)
-
+            # TODO: is there any benefit to having it cached ?
             ec2 = self.ec2
             
-            info = read_cache()
-            if info is None:
+            cache = self.cache
+            if not cache.read_cache():
                 continue
 
-            if not 'ts_dict' in info:
-                info['ts_dict'] = dict()
+            current_time = datetime.now()
 
-            # the private struct would allow us to track when we queried each
-            # value last time
-            ts_dict = info['ts_dict']
-            self.current_time = datetime.now()
-
-            if self.is_record_old_enough(ts_dict, 'instance_in_all_regions'):
+            # TODO: Maybe move the intervals struct to aws_cache ?
+            if cache.is_record_old_enough(current_time, intervals, 'instance_in_all_regions'):
                 print("querying all instances", end=' - ', flush = True)
-                info['regions'] = ec2.query_all_instances()
-                ts_dict['instance_in_all_regions'] = self.current_time.timestamp()
-                ts_dict['instance_in_pref_regions'] = self.current_time.timestamp()
+
+                all_instances, has_running_instances = ec2.query_all_instances()
+
+                cache.set_instances(all_instances)
+                cache.set_is_running_instances(has_running_instances)
+
+                cache.update_record_ts('instance_in_all_regions', current_time.timestamp())
+                cache.update_record_ts('instance_in_pref_regions', current_time.timestamp())
                 print('done')
-            elif self.is_record_old_enough(ts_dict, 'instance_in_pref_regions'):
+            elif cache.is_record_old_enough(current_time, intervals, 'instance_in_pref_regions'):
                 print("querying preferred instances", end=' - ', flush = True)
 
-                preferred_instances = ec2.quary_preferred_regions()
+                preferred_instances, has_running_instances = ec2.quary_preferred_regions()
 
-                if not 'regions' in info:
-                    info['regions'] = dict()
+                cache.set_instances(preferred_instances)
+                cache.set_is_running_instances(has_running_instances)
 
-                for region in preferred_instances.keys():
-                    info['regions'][region]['instances'] = preferred_instances[region]['instances']
+                cache.update_record_ts('instance_in_pref_regions', current_time.timestamp())
+                print('done')
 
-                ts_dict['instance_in_pref_regions'] = self.current_time.timestamp()
+            if cache.is_record_old_enough(current_time, intervals, 'interfaces_in_all_regions'):
+                print("querying all interfaces", end=' - ', flush = True)
+
+                all_interfaces = ec2.query_all_interfaces()
+
+                self.cache.set_interfaces(all_interfaces)
+
+                cache.update_record_ts('interfaces_in_all_regions', current_time.timestamp())
                 print('done')
 
             # update fail because of locking, retry again next time
-            update_cache(info)
+            # TODO: maybe rename to something clearer
+            cache.update_cache()
+
+            time.sleep(5)
 
         # kill request server as well
         self.req_server.handle_close()
 
     def start_server(self):
         if not self.query_info_running:
+            # TODO: re-enable later
             self.start_requests_server()
             self.query_info_timer.start()
             self.query_info_running = True

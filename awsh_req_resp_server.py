@@ -6,7 +6,7 @@ import threading
 import time
 import logging
 
-AWHS_PORT=7008
+AWHS_PORT=7007
 AWSH_ACK_STR='AWSHACK'
 AWSH_RESULT_STR='AWSHRESULT'
 

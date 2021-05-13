@@ -22,8 +22,17 @@
        <verstretch>0</verstretch>
       </sizepolicy>
      </property>
+     <property name="font">
+      <font>
+       <family>Noto Mono</family>
+       <pointsize>15</pointsize>
+      </font>
+     </property>
      <property name="text">
       <string>region_name</string>
+     </property>
+     <property name="alignment">
+      <set>Qt::AlignCenter</set>
      </property>
     </widget>
    </item>

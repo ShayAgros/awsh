@@ -8,7 +8,7 @@ import sys
 
 from gui.instances_view import instances_view
 
-from awsh_cache import read_cache
+from awsh_cache import awsh_cache
 from awsh_server import awsh_server_commands
 from awsh_req_resp_server import awsh_req_client
 
@@ -42,12 +42,11 @@ class aws_gui(QWidget):
         wait_thread.start()
 
         self.create_instances_views(regions)
-        region = 'eu-west-1'
 
         self.setLayout(self.viewStackedLayout)
 
         self.setGeometry(50, 200, 900, 900)
-        self.setWindowTitle("Second Window")
+        self.setWindowTitle("AWS Helper")
         self.show()
 
     def create_instances_views(self, all_regions):
@@ -65,9 +64,10 @@ class aws_gui(QWidget):
                 continue
 
             instances = all_regions[region]['instances']
+            interfaces = all_regions[region]['interfaces']
             has_running_instances = all_regions[region]['has_running_instances']
 
-            region_views[region] = instances_view(region, instances=instances, req_client=self.req_client, parent=self)
+            region_views[region] = instances_view(region, instances=instances, interfaces=interfaces, parent=self)
             if has_running_instances:
                 stacked_views.insert(0, region_views[region])
             else:
@@ -148,8 +148,11 @@ class aws_gui(QWidget):
 if __name__ == '__main__':
     app = QApplication(sys.argv)
 
-    info = read_cache()
+    cache = awsh_cache()
+    # read cached entries from file
+    if not cache.read_cache():
+        print("Failed to read cache")
 
-    window = aws_gui(info['regions'])
+    window = aws_gui(cache.get_instances())
     # window.show()
     sys.exit(app.exec_())

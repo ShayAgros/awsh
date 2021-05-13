@@ -6,20 +6,15 @@ from PyQt5.uic import loadUi
 # will keep) state across invocations. For the GUI however state is not needed
 # and creating a class every invocation seems useless and resource wasteful
 from awsh_ec2 import Aws, is_instance_running
-from awsh_utils import find_in_saved_logins
+from awsh_utils import find_in_saved_logins, clean_saved_logins
 from awsh_server import awsh_server_commands
+from awsh_client import awsh_client
 from awsh_req_resp_server import awsh_req_client
-
-# TODO: remove all these, they are only here for testing
-import threading
-import asyncore
-import time
 
 import json
 import os
 
 AWSH_HOME = os.path.dirname(os.path.realpath(__file__)) + '/..'
-print("AWSH_HOME is", AWSH_HOME)
 
 class ec2_instance(QFrame):
 
@@ -64,7 +59,7 @@ class instances_view(QWidget):
     widget_update_signal = pyqtSignal(dict)
     action_item_update_signal = pyqtSignal(dict)
 
-    def __init__(self, region, instances = None, parent = None, req_client = None):
+    def __init__(self, region, instances = dict(), interfaces = dict(), parent = None):
 
         super().__init__(parent)
 
@@ -75,8 +70,6 @@ class instances_view(QWidget):
         self.chosen_c = 0
         self.region = region
 
-        self.req_client = req_client
-
         # Fields added by the ui:
         # instances_layout  = the layout which holds the instances (QGridLayout)
         # region_name       = label that identifies the region (QLabel)
@@ -86,8 +79,10 @@ class instances_view(QWidget):
         self.place_widgets(instances)
         self.widget_update_signal.connect(self.update_instances)
 
-
         self.action_item_update_signal.connect(self.set_action_item_str)
+
+        self.pending_actions = dict()
+        self.client = awsh_client(region=region, instances = instances, interfaces = interfaces)
 
     def update_instances(self, instances):
         print("gui: Updating widgets for region", self.region)
@@ -109,16 +104,34 @@ class instances_view(QWidget):
         @string: the string to set
         """
         action_item = arguments['action_item']
-        string      = arguments['action_string']
+        string      = arguments['action_string'] + " - Done"
 
         action_item.setText(string)
 
     def add_action(self, action_str):
         """Add an item to the action list"""
+        action_str = action_str + " - pending"
         list_item = QListWidgetItem(action_str, self.action_list)
         self.action_list.addItem(list_item)
 
         return list_item
+    
+    def handle_complation(self, reply_handler = None):
+        """Create a custom completion handler. This returns a function that can
+        be passed to awsh_client class. This function is called with the request
+        id and server's reply"""
+        def handle_request_completion(request_id, server_reply = None):
+            action_item = self.pending_actions[request_id]["item"]
+            action_string = self.pending_actions[request_id]["action_string"]
+
+            if not reply_handler is None:
+                reply_handler(server_reply)
+
+            self.action_item_update_signal.emit(
+                    {'action_item': action_item, 'action_string': action_string}
+                    )
+
+        return handle_request_completion
 
     def place_widgets(self, instances):
 
@@ -158,9 +171,6 @@ class instances_view(QWidget):
             client = awsh_req_client()
             request = '{} {}'.format(command, arguments)
             print('gui, sending request: ' + request)
-
-            action_item_str = "{} - in progress".format(action_str)
-            action_item = self.add_action(action_item_str)
 
             def handle_reply(connection, server_reply):
                 connection.close()
@@ -227,6 +237,9 @@ class instances_view(QWidget):
             print("Added at index", str(index))
             o_chosen_c.set_instance_index(index)
             self.add_action("Index {}@{}".format(username, server))
+        elif e.text() == 'C':
+            clean_saved_logins()
+            self.add_action("Cleaned saved_logins - Done")
         elif e.text() == 'R': # refresh instances in region
             def update_instance_list(instances_str):
                 try:
@@ -250,7 +263,7 @@ class instances_view(QWidget):
                 pass
 
             self.send_client_command(command=awsh_server_commands.START_INSTANCE,
-                    arguments=argument_string, handler= dummy,
+                    arguments=argument_string, handler=dummy,
                 action_str="Starting instance " + instance_id)
 
         elif e.text() == 'F': # start an instance
@@ -264,4 +277,20 @@ class instances_view(QWidget):
 
             self.send_client_command(command=awsh_server_commands.STOP_INSTANCE,
                     arguments=argument_string, handler= dummy,
-                action_str="Stopping instance " + instance_id)
+                    action_str="Stopping instance " + instance_id)
+        elif e.text() == 'c':
+            instance    = o_chosen_c.instance_object
+
+            client = self.client
+            request_id, interface = client.connect_eni(instance, finish_callback=self.handle_complation())
+
+            # the operation has been canceled
+            if request_id is None:
+                return
+
+            inf_name = interface['name']
+            inf_id = interface['id']
+
+            action_string = "Connecting ENI " + (f"{inf_name} ({inf_id})" if inf_name else f"{inf_id}")
+            action_item = self.add_action(action_string)
+            self.pending_actions[request_id] = { 'item': action_item, 'action_string' : action_string }
