@@ -1,3 +1,4 @@
 psutil
 pid
 pyqt5
+coloredlogs

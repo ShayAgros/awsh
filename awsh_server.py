@@ -1,4 +1,7 @@
 import boto3
+# TODO: maybe move all such exceptions to Aws class, and have your own defined
+# exceptions ?
+import botocore.exceptions
 import threading
 import signal, sys
 import time
@@ -10,14 +13,17 @@ from pid import PidFile
 
 from awsh_ec2 import Aws
 from awsh_cache import awsh_cache
-from awsh_req_resp_server import start_requests_server, awsh_req_server
+from awsh_req_resp_server import start_requests_server, awsh_req_server, awsh_connection
+
+import logging, coloredlogs
 
 # TODO: separate the request handler and the synchronous update into two
 # functions. They don't share anything in common except shared access to boto3
 
 intervals = {
+    # TODO: not used, maybe remove it completely
     "instance_in_pref_regions"  : 3600 * 1,
-    "instance_in_all_regions"   : 3600 * 3,
+    "instance_in_all_regions"   : 3600 * 8,
     "interfaces_in_all_regions" : 3600 * 24 * 2,
     # "all_amis": 3600 * 24,
     # "all_instance_size": 3600 * 24, 
@@ -38,6 +44,7 @@ class awsh_server_commands():
     START_INSTANCE=2
     STOP_INSTANCE=3
     CONNECT_ENI=4
+    DETACH_ALL_ENIS=5
 
 server_stop = False
 
@@ -59,6 +66,11 @@ class awsh_server:
         self.cache = awsh_cache()
         self.cache.read_cache()
 
+        coloredlogs.DEFAULT_LOG_FORMAT = '%(asctime)s %(name)-20s %(levelname)s %(message)s'
+        coloredlogs.install(level="INFO", stream=sys.stdout)
+
+        self.logger = logging.getLogger("awsh-server")
+
     def start_requests_server(self):
         if not self.req_resp_server_running:
             self.req_resp_server_running = True
@@ -66,7 +78,7 @@ class awsh_server:
             req_server_thread = threading.Thread(target=lambda: start_requests_server(self.req_server))
             req_server_thread.start()
 
-    def process_request(self, request, connection):
+    def process_request(self, request: list, connection: awsh_connection):
         """This function is the needs to be implemented for awsh_req_server.  It
         is called each time a request is submitted.
             
@@ -75,36 +87,45 @@ class awsh_server:
                             operation is completed 
            
            """
+        logger = self.logger
 
-        print("aws_server: received command {}".format(request[0]))
+        logger.info("aws_server: received command {}".format(request[0]))
         # will be overridden depending on the request
         reply = ''
 
         if request[0] == str(awsh_server_commands.QUERY_REGION):
             region = request[1]
 
-            print('aws_server: asked to query region', request[1])
+            logger.info('aws_server: asked to query region {}'.format(request[1]))
 
             instances, has_running_instances = self.ec2.query_instances_in_regions([region])
             reply = json.dumps(instances[region])
 
             cache = self.cache
 
-            cache.set_instances(regions)
+            cache.set_instances(instances)
             cache.set_is_running_instances(has_running_instances)
 
         elif request[0] == str(awsh_server_commands.START_INSTANCE):
             region = request[1]
             instance_id = request[2]
 
-            print('aws_server: starting instance {} in region {}'.format(instance_id, region))
-            self.ec2.start_instance(instance_id, region, wait_to_start=True)
+            logger.info('aws_server: starting instance {} in region {}'.format(instance_id, region))
+            instance_info = self.ec2.start_instance(instance_id, region, wait_to_start=True)
+
+            cache = self.cache
+
+            cache.set_instance(instance_info, region, is_running=True)
+
+            # TODO: This is wasteful to send all instances on the socket. Also
+            # it allows a race. Fix it
+            reply = json.dumps(cache.get_instances(region))
 
         elif request[0] == str(awsh_server_commands.STOP_INSTANCE):
             region = request[1]
             instance_id = request[2]
 
-            print('aws_server: stopping instance {} in region {}'.format(instance_id, region))
+            logger.info('aws_server: stopping instance {} in region {}'.format(instance_id, region))
             self.ec2.stop_instance(instance_id, region, wait_until_stop=False)
         elif request[0] == str(awsh_server_commands.CONNECT_ENI):
             region      = request[1]
@@ -113,63 +134,89 @@ class awsh_server:
             index       = int(request[4])
 
             self.ec2.connect_eni_to_instance(region, index, instance_id=instance_id, eni_id=eni)
+        elif request[0] == str(awsh_server_commands.DETACH_ALL_ENIS):
+            region      = request[1]
+            instance_id = request[2]
+
+            # TODO: this currently results in a query done to the server to find
+            # what interfaces are attached. This information should already be
+            # available to the server. It can specify the ENIs to detach to the
+            # function
+            detached_enis = self.ec2.detach_private_enis(region, instance_id)
+
+            if detached_enis:
+                reply = json.dumps(detached_enis)
+
         else:
-            print('aws_server: unknown command', request[0])
+            logger.error('aws_server: unknown command {}'.format(request[0]))
 
         connection.complete_request(reply=reply)
 
-
     def query_info(self):
+
+        logger = self.logger
 
         while not server_stop:
             
+            time.sleep(5)
             # TODO: is there any benefit to having it cached ?
             ec2 = self.ec2
             
             cache = self.cache
-            if not cache.read_cache():
-                continue
 
             current_time = datetime.now()
 
             # TODO: Maybe move the intervals struct to aws_cache ?
             if cache.is_record_old_enough(current_time, intervals, 'instance_in_all_regions'):
-                print("querying all instances", end=' - ', flush = True)
+                logger.info("querying all instances")
 
-                all_instances, has_running_instances = ec2.query_all_instances()
+                try:
+                    all_instances, has_running_instances = ec2.query_all_instances()
+                except botocore.exceptions.EndpointConnectionError as err:
+                    logger.warning("Failed to query EC2 due to internet failure")
+                    continue
 
                 cache.set_instances(all_instances)
                 cache.set_is_running_instances(has_running_instances)
 
                 cache.update_record_ts('instance_in_all_regions', current_time.timestamp())
                 cache.update_record_ts('instance_in_pref_regions', current_time.timestamp())
-                print('done')
-            elif cache.is_record_old_enough(current_time, intervals, 'instance_in_pref_regions'):
-                print("querying preferred instances", end=' - ', flush = True)
+                logger.info('done querying all instances')
+            # elif cache.is_record_old_enough(current_time, intervals, 'instance_in_pref_regions'):
+                # print("querying preferred instances", end=' - ', flush = True)
 
-                preferred_instances, has_running_instances = ec2.quary_preferred_regions()
+                # preferred_instances, has_running_instances = ec2.quary_preferred_regions()
 
-                cache.set_instances(preferred_instances)
-                cache.set_is_running_instances(has_running_instances)
+                # cache.set_instances(preferred_instances)
+                # cache.set_is_running_instances(has_running_instances)
 
-                cache.update_record_ts('instance_in_pref_regions', current_time.timestamp())
-                print('done')
+                # cache.update_record_ts('instance_in_pref_regions', current_time.timestamp())
+                # print('done')
 
             if cache.is_record_old_enough(current_time, intervals, 'interfaces_in_all_regions'):
-                print("querying all interfaces", end=' - ', flush = True)
+                logger.info("querying all interfaces")
 
-                all_interfaces = ec2.query_all_interfaces()
+                try:
+                    all_interfaces = ec2.query_all_interfaces()
+                except botocore.exceptions.EndpointConnectionError as err:
+                    logger.warning("Failed to query EC2 due to internet failure")
+                    continue
+
+                # We allow the awsh_client to decide itself whether an interface
+                # is free or not based on the instance's attached ENIs. Denote
+                # all interfaces as free
+                for enis in all_interfaces.values():
+                    for eni in enis.values():
+                        eni['status'] = 'available'
 
                 self.cache.set_interfaces(all_interfaces)
 
                 cache.update_record_ts('interfaces_in_all_regions', current_time.timestamp())
-                print('done')
+                logger.info("done querying all interfaces")
 
             # update fail because of locking, retry again next time
             # TODO: maybe rename to something clearer
             cache.update_cache()
-
-            time.sleep(5)
 
         # kill request server as well
         self.req_server.handle_close()
@@ -191,6 +238,7 @@ def start_server(args):
        available amis, available instance size etc.
 
        args is unused, but declared to be consistent with other awsh subcommands"""
+
     try:
         # This would prevent more than one process to be ran
         with PidFile('awsh_server_daemon') as p:
@@ -198,7 +246,7 @@ def start_server(args):
             signal.signal(signal.SIGTERM, signal_handler)
 
             server = awsh_server()
-            print("Starting server")
+            print("Starting aws helper server")
 
             server.start_server()
     except Exception as e:

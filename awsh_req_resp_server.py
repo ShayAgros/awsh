@@ -24,7 +24,9 @@ class awsh_connection(asynchat.async_chat):
     def __init__(self, sock, request_object):
         asynchat.async_chat.__init__(self, sock=sock)
 
-        print('created awsh connection', flush = True)
+        self.logger = logging.getLogger("awsh_connection")
+
+        self.logger.debug('created awsh connection')
         self.received_data = []
         self.request_object = request_object
 
@@ -34,14 +36,14 @@ class awsh_connection(asynchat.async_chat):
     def collect_incoming_data(self, data):
         """Read an incoming request from the client and store it in the request
         queue"""
-        print('server: Received partial message: ' + str(data), flush = True)
+        self.logger.debug('Received partial message: ' + str(data))
         ddata = data.decode('ascii')
         self.received_data.append(ddata)
 
     def found_terminator(self):
         # We received a request. Ack it, and put it into processing
 
-        print('server: received request:', ' '.join(self.received_data), flush=True)
+        self.logger.debug('Received request: ' +  ' '.join(self.received_data))
 
         request_command = ' '.join(self.received_data).split()
         req_id = int(request_command[0])
@@ -61,7 +63,7 @@ class awsh_connection(asynchat.async_chat):
         self.received_data = []
 
     def complete_request(self, req_id, response, success):
-        print('completed request id:', req_id, flush=True)
+        self.logger.debug ('completed request id: ' + str(req_id))
         reply = '{} {} {}{}'.format(req_id, AWSH_RESULT_STR, response, '\n')
         reply_bytes = bytes(reply, 'ascii')
 
@@ -79,10 +81,12 @@ class awsh_req_server(asyncore.dispatcher):
 
         assert getattr(request_object, 'process_request', None) != None
 
+        self.logger = logging.getLogger("awsh_req_server")
+
         asyncore.dispatcher.__init__(self)
         self.create_socket(socket.AF_INET, socket.SOCK_STREAM)
 
-        print("Started async server on port", AWHS_PORT, flush=True)
+        self.logger.info("Started async server on port {}".format(AWHS_PORT))
 
         self.request_object = request_object
 
@@ -93,14 +97,14 @@ class awsh_req_server(asyncore.dispatcher):
         self.listen(5)
 
     def handle_accept(self):
-        print("Accepted a connection", flush=True)
+        self.logger.debug("Accepted a connection")
         client_info = self.accept()
         awsh_connection(sock = client_info[0],
                         request_object = self.request_object)
 
 
     def handle_close(self):
-        print('server: closing server')
+        self.logger.info('server: closing server')
         self.close()
 
 
@@ -110,7 +114,10 @@ class awsh_req_client(asynchat.async_chat):
     different order than originally sent)"""
 
     def __init__(self):
-        print('started awsh client', flush=True)
+
+        self.logger = logging.getLogger("awsh_req_client")
+        self.logger.info('started awsh client')
+
         asynchat.async_chat.__init__(self)
 
         self.connected_established = False
@@ -124,11 +131,11 @@ class awsh_req_client(asynchat.async_chat):
         # self.received_replies = dict()
         self.received_reply = list()
 
-        print('connecting', flush=True)
+        self.logger.debug('connecting')
         self.connect(('localhost', AWHS_PORT))
 
     def handle_connect(self):
-        print('client: connection succeeded', flush=True)
+        self.logger.debug('client: connection succeeded')
         self.connected_established = True
         self.set_terminator(b"\n")
         # self.push(b"hello world\n")
@@ -139,6 +146,8 @@ class awsh_req_client(asynchat.async_chat):
         self.received_reply.append(str(data, 'ascii'))
 
     def found_terminator(self):
+
+        logger = self.logger
 
         received_reply = ' '.join(self.received_reply)
         self.received_reply = []
@@ -157,43 +166,43 @@ class awsh_req_client(asynchat.async_chat):
             reply_type = ''
 
         if not req_id in pending_commands:
-            print("Received reply for unexisting req id {}".format(req_id))
+            logger.error("Received reply for unexisting req id {}".format(req_id))
             return
 
         if reply_type == AWSH_ACK_STR:
             if pending_commands[req_id]['ack']:
-                print("client: Received ack for already acknowledged command. req id: {}".format(req_id))
+                logger.error("client: Received ack for already acknowledged command. req id: {}".format(req_id))
             else:
-                print("client: Acked. req id: {}".format(req_id))
+                logger.debug("client: Acked. req id: {}".format(req_id))
                 pending_commands[req_id]['ack'] = True
             return
         elif not pending_commands[req_id]['ack']:
-            print("Received reply_type for a request that hasn't been acked")
+            logger.error("Received reply_type for a request that hasn't been acked")
             return
 
         if reply_type != AWSH_RESULT_STR:
-            print("client: invalid reply type (neither ack or result code): type =", reply_type)
-            print("client: closing connection")
+            logger.error("client: invalid reply type (neither ack or result code): type = " + reply_type)
+            logger.error("client: closing connection")
             self.close()
             return
             
         # parse the response
         if len(reply) > 2:
-            response = ''.join(reply[2:])
+            response = ' '.join(reply[2:])
         else:
             response = ''
 
-        print("client: received reply_type:", response)
+        logger.debug("client: received reply_type:", response)
         response_handler = pending_commands[req_id]['res_handler']
 
         if not response_handler:
-            print('No respond handler. Doing nothing with the reply')
+            logger.debug('No respond handler. Doing nothing with the reply')
         else:
             response_handler(self, response)
 
     def send_request(self, request, response_handler = None):
 
-        print('client: sending request', str(request), flush=True)
+        self.logger.debug('client: sending request', str(request), flush=True)
         
         req_id = str(self.next_request_id)
 

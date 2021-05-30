@@ -6,8 +6,8 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>311</width>
-    <height>198</height>
+    <width>449</width>
+    <height>171</height>
    </rect>
   </property>
   <property name="sizePolicy">
@@ -16,17 +16,38 @@
     <verstretch>0</verstretch>
    </sizepolicy>
   </property>
+  <property name="maximumSize">
+   <size>
+    <width>16777215</width>
+    <height>171</height>
+   </size>
+  </property>
   <property name="windowTitle">
    <string>Frame</string>
   </property>
   <property name="styleSheet">
-   <string notr="true">background-color: rgb(201, 255, 206);</string>
+   <string notr="true">QFrame#background_frame[instance_state=&quot;running&quot;] {
+	background-color: rgb(215, 255, 212);
+	border-width: 0px ;
+	border-style: solid;
+	border-radius: 30px;
+}
+
+QFrame#background_frame[instance_state=&quot;stopped&quot;] {    
+	background-color: rgb(255, 208, 203);
+	border-width: 0px ;
+	border-style: solid;
+	border-radius: 30px;
+}</string>
   </property>
   <property name="frameShape">
    <enum>QFrame::NoFrame</enum>
   </property>
   <property name="frameShadow">
    <enum>QFrame::Plain</enum>
+  </property>
+  <property name="instance_state" stdset="0">
+   <string>running</string>
   </property>
   <layout class="QHBoxLayout" name="horizontalLayout_2">
    <item>
@@ -35,64 +56,171 @@
       <number>20</number>
      </property>
      <item>
-      <layout class="QHBoxLayout" name="horizontalLayout">
+      <layout class="QHBoxLayout" name="top_bar" stretch="0,0">
+       <property name="spacing">
+        <number>4</number>
+       </property>
+       <property name="topMargin">
+        <number>0</number>
+       </property>
        <item>
-        <widget class="QLabel" name="tag_name">
+        <widget class="QLabel" name="sel_img">
+         <property name="enabled">
+          <bool>true</bool>
+         </property>
+         <property name="sizePolicy">
+          <sizepolicy hsizetype="Maximum" vsizetype="Maximum">
+           <horstretch>0</horstretch>
+           <verstretch>0</verstretch>
+          </sizepolicy>
+         </property>
+         <property name="maximumSize">
+          <size>
+           <width>30</width>
+           <height>20</height>
+          </size>
+         </property>
+         <property name="styleSheet">
+          <string notr="true"/>
+         </property>
          <property name="text">
-          <string>tag_name</string>
+          <string/>
+         </property>
+         <property name="pixmap">
+          <pixmap>../../../../drawings/asterix.png</pixmap>
+         </property>
+         <property name="scaledContents">
+          <bool>true</bool>
+         </property>
+         <property name="margin">
+          <number>0</number>
          </property>
         </widget>
        </item>
        <item>
-        <spacer name="horizontalSpacer">
-         <property name="orientation">
-          <enum>Qt::Horizontal</enum>
-         </property>
-         <property name="sizeHint" stdset="0">
+        <widget class="QLabel" name="connection_nr">
+         <property name="minimumSize">
           <size>
-           <width>40</width>
+           <width>0</width>
            <height>20</height>
           </size>
          </property>
-        </spacer>
-       </item>
-       <item>
-        <widget class="QLabel" name="connection_nr">
+         <property name="styleSheet">
+          <string notr="true"/>
+         </property>
          <property name="text">
-          <string>connection_nr</string>
+          <string>ix</string>
+         </property>
+         <property name="alignment">
+          <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
+         </property>
+         <property name="margin">
+          <number>0</number>
          </property>
         </widget>
        </item>
       </layout>
      </item>
      <item>
+      <widget class="QLabel" name="tag_name">
+       <property name="font">
+        <font>
+         <family>Courier</family>
+         <pointsize>18</pointsize>
+        </font>
+       </property>
+       <property name="lineWidth">
+        <number>0</number>
+       </property>
+       <property name="text">
+        <string>tag_name</string>
+       </property>
+       <property name="scaledContents">
+        <bool>true</bool>
+       </property>
+       <property name="alignment">
+        <set>Qt::AlignHCenter|Qt::AlignTop</set>
+       </property>
+      </widget>
+     </item>
+     <item>
       <widget class="QLabel" name="instance_type">
+       <property name="sizePolicy">
+        <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
+         <horstretch>0</horstretch>
+         <verstretch>0</verstretch>
+        </sizepolicy>
+       </property>
+       <property name="lineWidth">
+        <number>0</number>
+       </property>
        <property name="text">
         <string>instance_type</string>
        </property>
+       <property name="scaledContents">
+        <bool>false</bool>
+       </property>
        <property name="alignment">
-        <set>Qt::AlignCenter</set>
+        <set>Qt::AlignHCenter|Qt::AlignTop</set>
        </property>
       </widget>
      </item>
      <item>
-      <widget class="QLabel" name="state">
-       <property name="text">
-        <string>state</string>
+      <widget class="QFrame" name="interfaces_frame">
+       <property name="autoFillBackground">
+        <bool>false</bool>
        </property>
-       <property name="alignment">
-        <set>Qt::AlignCenter</set>
+       <property name="styleSheet">
+        <string notr="true">.QLabel {
+	border: 0px solid black;
+	border-radius: 7px;
+	background-color: rgb(11, 255, 162);
+	min-height: 10px;
+    max-width:80px;
+	padding-right: 10px;
+	padding-left: 10px;
+}
+</string>
        </property>
-      </widget>
-     </item>
-     <item>
-      <widget class="QLabel" name="ami_name">
-       <property name="text">
-        <string>ami_name</string>
+       <property name="frameShape">
+        <enum>QFrame::NoFrame</enum>
        </property>
-       <property name="alignment">
-        <set>Qt::AlignCenter</set>
+       <property name="frameShadow">
+        <enum>QFrame::Plain</enum>
        </property>
+       <property name="lineWidth">
+        <number>0</number>
+       </property>
+       <property name="midLineWidth">
+        <number>0</number>
+       </property>
+       <layout class="QHBoxLayout" name="horizontalLayout_3">
+        <property name="spacing">
+         <number>0</number>
+        </property>
+        <property name="leftMargin">
+         <number>0</number>
+        </property>
+        <property name="topMargin">
+         <number>9</number>
+        </property>
+        <property name="rightMargin">
+         <number>0</number>
+        </property>
+        <property name="bottomMargin">
+         <number>0</number>
+        </property>
+        <item>
+         <layout class="QHBoxLayout" name="interfaces_layout">
+          <property name="spacing">
+           <number>15</number>
+          </property>
+          <property name="leftMargin">
+           <number>25</number>
+          </property>
+         </layout>
+        </item>
+       </layout>
       </widget>
      </item>
     </layout>

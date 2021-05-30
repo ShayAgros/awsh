@@ -318,7 +318,9 @@ class Aws:
                 ],
                 )
 
-    def detach_private_enis(self, region, instance_id, use_cache = False):
+    # TODO: add an option for this function to get a list of ENIs to detach.
+    # This would save the server access
+    def detach_private_enis(self, region, instance_id):
         ec2 = boto3.resource('ec2', region_name=region)
         instance = ec2.Instance(instance_id)
         
@@ -328,11 +330,13 @@ class Aws:
                 enis_to_detach.append(interface_attr['NetworkInterfaceId'])
 
         if not len(enis_to_detach):
-            return
+            return []
 
         for eni_id in enis_to_detach:
             eni = ec2.NetworkInterface(eni_id)
             eni.detach()
+
+        return enis_to_detach
 
     def _get_interface_in_region(self, region):
         ec2 = boto3.resource('ec2', region_name=region)
@@ -356,7 +360,7 @@ class Aws:
                     'groups'            : interface.groups,
                     'private_id'        : interface.private_ip_address,
                     'status'            : interface.status,
-                    'subnet_id'         : interface.subnet_id,
+                    'subnet'            : interface.subnet_id,
                     'source_dest_check' : interface.source_dest_check,
                     'description'       : interface.description,
                     'availability_zone' : interface.availability_zone,
@@ -427,11 +431,12 @@ class Aws:
         return subnet
 
     def connect_eni_to_instance(self, region, device_index, network_card_index = 0, instance_id = None, eni_id = None):
-        running_instances = self.get_instance_in_region(region)
 
         ec2 = boto3.resource('ec2', region_name=region)
 
         if not instance_id:
+            running_instances = self.get_instance_in_region(region)
+
             instance_choices = list()
             for key in running_instances.keys():
                 name = running_instances[key]['name']
@@ -514,7 +519,7 @@ class Aws:
             else:
                 raise error
 
-    def start_instance(self, instance_id, region, wait_to_start=True):
+    def start_instance(self, instance_id, region, wait_to_start=False):
         ec2 = boto3.resource('ec2', region_name=region)
         
         instance = ec2.Instance(instance_id)
@@ -524,12 +529,17 @@ class Aws:
             self.detach_private_enis(region=region, instance_id=instance_id)
             instance.start()
             if wait_to_start:
+                # TODO: this can fail, need to check how to handle this error
                 instance.wait_until_running()
+                instances, _ = self.get_instance_in_region(region, instance_id=instance_id)
+                return instances[instance_id]
         except botocore.exceptions.ClientError as error:
             if error.response['Error']['Code'] == 'InvalidInstanceID.NotFound':
                 print("No client with instance id", instance_id, "exists in region", region)
             else:
                 raise error
+
+        return None
 
     def stop_instance(self, instance_id, region, wait_until_stop=False):
         ec2 = boto3.resource('ec2', region_name=region)
@@ -538,6 +548,7 @@ class Aws:
         try:
             instance.stop()
             if wait_until_stop:
+                # TODO: this can fail, need to check how to handle this error
                 instance.wait_until_stopped()
         except botocore.exceptions.ClientError as error:
             if error.response['Error']['Code'] == 'InvalidInstanceID.NotFound':
@@ -550,18 +561,18 @@ if __name__ == '__main__':
     ec2 = Aws()
 
     # ec2.detach_private_enis('us-east-1', 'i-05f612a1327a46681')
-    # subnet = ec2.create_subnet('us-west-2', 'us-west-2d', 'subnet-d-1')
+    subnet = ec2.create_subnet('us-west-2', 'us-west-2d', 'subnet-d-1')
     # subnet = "subnet-05b50406575c83879"
     # ec2.create_interface('testing-c2-i4', subnet, region='us-west-2')
-    # ec2.create_interface('testing-d1-i1', subnet)
-    # ec2.create_interface('testing-d1-i2', subnet)
+    ec2.create_interface('testing-d1-i1', subnet)
+    ec2.create_interface('testing-d1-i2', subnet)
     # ec2.create_interface('testing-d1-i3', subnet)
     # print(json.dumps(ec2._get_interface_in_region('us-west-2'), indent=4))
 
     # ec2.connect_eni_to_instance('eu-west-1')
 
-    # ec2.start_instance('i-0cfacd0f2ea3ef017', 'us-east-1')
+    # print(json.dumps(ec2.start_instance('i-0ffff7e457b178ba8', 'us-west-2', wait_to_start=True), indent=4))
     # ec2.query_all_instances()
-    print(json.dumps(ec2.quary_preferred_regions(), indent = 4))
+    # print(json.dumps(ec2.quary_preferred_regions(), indent = 4))
     # print(json.dumps(ec2.query_all_instances(), indent=4))
     # ec2.print_online_instances()

@@ -84,6 +84,19 @@ class awsh_cache:
         self.__set_cache_entry('instances', instances, region)
 
     @synchronize_with_lock
+    def set_instance(self, instance, region, is_running = False):
+        """Update a single instance entry in the cache
+        @instance: the instance data. This data should contain 'id' field
+            which identifies its id
+        @region: the instance's region
+        @is_running: whether the instance is in a running state
+
+        @return None
+        """
+        self.cache['regions'][region]['instances'][instance['id']] = instance
+        self.cache['regions'][region]['has_running_instances'] |= is_running
+
+    @synchronize_with_lock
     def get_instances(self, region=None):
         """Set list of instances in region from cache"""
         if region is None:
