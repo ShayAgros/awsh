@@ -155,10 +155,13 @@ class Aws:
                     'vpc'                   : interface_attr['VpcId'],
                     'security_group'        : interface_attr['Groups'],
                     'delete_on_termination' : interface_attr['Attachment']['DeleteOnTermination'],
+                    'device_index'          : interface_attr['Attachment']['DeviceIndex'],
                     'card_id_index'         : card_id_index,
                     'description'           : interface_attr['Description'],
                 }
                 interfaces.append(interface)
+
+            interfaces.sort(key=lambda k: k['card_id_index'])
 
             # Get 'Name' tag of the instance. 'tags' attribute might not be
             # defined
@@ -556,7 +559,36 @@ class Aws:
             else:
                 raise error
 
-if __name__ == '__main__':
+    def get_regions_full_name(self):
+        """Get the long name of every region (e.g. Us West (Oregon)) for
+        us-west-2.
+
+        @returns a dictionary with region short names (e.g. us-west-2) as keys,
+        and the region long name as value"""
+
+        # the region doesn't really matter here, but it's a required parameter
+        ssm = boto3.client('ssm', region_name='us-east-1')
+
+        if not self.available_regions_list:
+            session = boto3.Session()
+            available_regions = session.get_available_regions('ec2')
+            self.available_regions_list = list(available_regions)
+
+        long_names = dict()
+        requests = list()
+        # taken from
+        # https://www.sentiatechblog.com/retrieving-all-region-codes-and-names-with-boto3
+        # maybe there's a more pythonic way. Couldn't find one
+        for region in self.available_regions_list:
+            req = f'/aws/service/global-infrastructure/regions/{region}/longName'
+            requests.append(req)
+            response = ssm.get_parameter(
+                Name=f'/aws/service/global-infrastructure/regions/{region}/longName'
+            )
+
+            long_names[region] = response['Parameter']['Value']
+
+        return long_names
 
     ec2 = Aws()
 
@@ -576,3 +608,6 @@ if __name__ == '__main__':
     # print(json.dumps(ec2.quary_preferred_regions(), indent = 4))
     # print(json.dumps(ec2.query_all_instances(), indent=4))
     # ec2.print_online_instances()
+
+if __name__ == '__main__':
+    main()

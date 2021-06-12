@@ -54,7 +54,10 @@ class awsh_connection(asynchat.async_chat):
         self.push(ack)
 
         def process_request():
-            self.request_object.process_request(request_command[1:], req_item)
+            try:
+                self.request_object.process_request(request_command[1:], req_item)
+            except Exception as e:
+                req_item.complete_request(reply=str(e), success=False)
             return
 
         job = threading.Thread(target=process_request)
@@ -64,7 +67,7 @@ class awsh_connection(asynchat.async_chat):
 
     def complete_request(self, req_id, response, success):
         self.logger.debug ('completed request id: ' + str(req_id))
-        reply = '{} {} {}{}'.format(req_id, AWSH_RESULT_STR, response, '\n')
+        reply = '{} {} {} {}{}'.format(req_id, AWSH_RESULT_STR, int(success), response, '\n')
         reply_bytes = bytes(reply, 'ascii')
 
         # reply the response
@@ -159,11 +162,8 @@ class awsh_req_client(asynchat.async_chat):
 
         reply = received_reply.split()
         req_id = reply[0]
-        try:
-            reply_type = reply[1]
-        except:
-            # if there is no reply_type, mark it as empty string
-            reply_type = ''
+
+        reply_type = reply[1]
 
         if not req_id in pending_commands:
             logger.error("Received reply for unexisting req id {}".format(req_id))
@@ -185,20 +185,22 @@ class awsh_req_client(asynchat.async_chat):
             logger.error("client: closing connection")
             self.close()
             return
+
+        request_success = bool(int(reply[2]))
             
         # parse the response
-        if len(reply) > 2:
-            response = ' '.join(reply[2:])
+        if len(reply) > 3:
+            request_response = ' '.join(reply[3:])
         else:
-            response = ''
+            request_response = ''
 
-        logger.debug("client: received reply_type:", response)
+        logger.debug("received reply_type:", request_response)
         response_handler = pending_commands[req_id]['res_handler']
 
         if not response_handler:
             logger.debug('No respond handler. Doing nothing with the reply')
         else:
-            response_handler(self, response)
+            response_handler(self, response_success = request_success, server_reply = request_response)
 
     def send_request(self, request, response_handler = None):
 

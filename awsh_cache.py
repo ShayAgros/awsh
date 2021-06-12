@@ -54,7 +54,7 @@ class awsh_cache:
         self.cache['regions'][region][field] = value
 
     @synchronize_with_lock
-    def __set_cache_entry(self, entry, values, region):
+    def __set_cache_entry(self, entry, values, region=None):
         """Set an entry in the cache, e.g. instances, interfaces or
         has_running_instances field
 
@@ -121,6 +121,14 @@ class awsh_cache:
             a string for a single region, or a list in which case
             @interfaces would be a dictionary with keys equal to @region elements"""
         self.__set_cache_entry('interfaces', interfaces, region)
+
+    def set_regions_long_names(self, regions_long_names):
+        """Set dict of regions long names (e.g. Oregon for us-west-2).
+
+        @regions_get_long_name: dictionary of regions' long named. The key is
+        the region short code (e.g. us-west-2)
+        """
+        self.__set_cache_entry('long_name', regions_long_names)
 
     @synchronize_with_lock
     def get_interfaces(self, region=None):

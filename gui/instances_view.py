@@ -1,4 +1,4 @@
-from PyQt5.QtWidgets import (QWidget, QFrame, QListWidgetItem, QLabel)
+from PyQt5.QtWidgets import (QWidget, QFrame, QListWidgetItem, QLabel, QGridLayout)
 from PyQt5.QtCore import pyqtSignal, Qt
 from PyQt5.uic import loadUi
 
@@ -59,6 +59,10 @@ class ec2_instance(QFrame):
         self.subnet_color_dict = subnet_color_dict
         self.add_interfaces(instance)
 
+    def __has_multiple_cards(self):
+        """returns whether this instance has multiple cards attached to it"""
+        return 'p4d' in self.instance_object['instance_type']
+
     def add_interfaces(self, instance):
         self.interfaces_layout.setAlignment(Qt.AlignLeft)
 
@@ -79,6 +83,10 @@ class ec2_instance(QFrame):
             subnet_color = subnet_color_dict[subnet_id]
 
             label.setStyleSheet(f'background-color: {subnet_color}')
+
+            # set card index (only for cards with multiple cards)
+            if self.__has_multiple_cards():
+                label.setText(str(interface['card_id_index']))
 
             interfaces_labels.append(label)
 
@@ -105,7 +113,7 @@ class instances_view(QWidget):
     widget_update_signal = pyqtSignal(dict)
     action_item_update_signal = pyqtSignal(dict)
 
-    def __init__(self, region, instances = dict(), interfaces = dict(), parent = None):
+    def __init__(self, region, region_long_name, instances=dict(), interfaces=dict(), parent=None):
 
         super().__init__(parent)
 
@@ -116,7 +124,7 @@ class instances_view(QWidget):
 
         self.row_len = 2
         self.labels = list()
-        self.chosen_c = 0
+        self.chosen_instance_item = 0
         self.region = region
 
         # Fields added by the ui:
@@ -129,16 +137,31 @@ class instances_view(QWidget):
         self.pending_actions = dict()
         self.client = awsh_client(region=region, instances=instances, interfaces=interfaces, subnet_color_dict=self.subnet_color_dict)
 
-        self.region_name.setText(region)
+        region_str = f'{region_long_name} | {region}'
+        self.region_name.setText(region_str)
         self.place_widgets(instances)
         self.widget_update_signal.connect(self.update_instances)
 
-    def update_instances(self, instances):
+    def update_instances(self, instances : dict):
         print("gui: Updating widgets for region", self.region)
-        # FIXME: a more robust option would be to update the chosen index to
-        # point to the same instance it pointed before. Since this index might
-        # change, there should be a search by instance id or something
-        self.chosen_c = 0
+
+        chosen_item_ix = 0
+        labels_len = len(self.labels)
+        if labels_len:
+            previous_chosen_instance_id = self.labels[self.chosen_instance_item].instance_id
+            print("previous_chosen_instance_id is {}".format(previous_chosen_instance_id))
+            # This assumes that the iteration over dictionaries keys is
+            # deterministic since place_widgets() would iterate over this
+            # dictionary as well. TODO: check this assumption
+            for instance_id in instances:
+                if instance_id == previous_chosen_instance_id:
+                    break
+                chosen_item_ix = chosen_item_ix + 1
+
+            chosen_item_ix = 0 if chosen_item_ix == len(instances) else chosen_item_ix
+
+        self.chosen_instance_item = chosen_item_ix
+
         self.place_widgets(instances)
 
     # TODO: check if you can use this function with several arguments instead of
@@ -152,8 +175,14 @@ class instances_view(QWidget):
         @action_item: a QListWidgetItem item
         @string: the string to set
         """
-        action_item = arguments['action_item']
-        string      = arguments['action_string'] + " - Done"
+        action_item     = arguments['action_item']
+        string          = arguments['action_string']
+
+        # TODO: add coloring to the string
+        if 'error_string' in arguments:
+            string = string + " - Failed ({})".format(arguments['error_string'])
+        else:
+            string = string + " - Done"
 
         action_item.setText(string)
 
@@ -170,11 +199,15 @@ class instances_view(QWidget):
         be passed to awsh_client class. This function is called with the request
         id and server's reply"""
 
-        def handle_request_completion(request_id, server_reply = None):
+        def handle_request_completion(request_id, response_success, server_reply = None):
 
             print("Received request completion")
-            if not reply_handler is None:
+            # If we failed the request, don't call reply handler
+            if not reply_handler is None and response_success:
                 reply_handler(server_reply)
+
+            if not response_success:
+                self.pending_actions[request_id]['error_string'] = f'server error: {server_reply}'
 
             print("updating action string")
             self.action_item_update_signal.emit(self.pending_actions[request_id])
@@ -186,7 +219,16 @@ class instances_view(QWidget):
         row_len = self.row_len
 
         rows_nr = len(instances) / row_len
+
         glayout = self.instances_layout
+        # remove all existing widgets from layout. This ensures that instances
+        # that no longer exist don't linger in the gui version
+        while glayout.count():
+            item = glayout.takeAt(0)
+            instance = item.widget()
+            if instance is not None:
+                instance.deleteLater()
+
         labels = []
 
         i_nr = 0
@@ -208,8 +250,9 @@ class instances_view(QWidget):
 
         self.labels = labels
 
-        # FIXME: This would break if there were no instances in the region
-        self.labels[self.chosen_c].mark()
+        if len(labels) > 0:
+            self.labels[self.chosen_instance_item].mark()
+
         glayout.setContentsMargins(15, 15, 15, 15)
         glayout.setSpacing(20)
 
@@ -217,7 +260,7 @@ class instances_view(QWidget):
         if not len(self.labels):
             return
 
-        o_chosen_c = self.labels[self.chosen_c]
+        old_chosen_instance_item = self.labels[self.chosen_instance_item]
 
         if len(e.text()) == 1 and e.text() in 'hjkl':
             letter = e.text()
@@ -225,26 +268,26 @@ class instances_view(QWidget):
             row_len = self.row_len
 
             if letter == 'l':
-                self.chosen_c = (self.chosen_c + 1) % label_len
+                self.chosen_instance_item = (self.chosen_instance_item + 1) % label_len
             elif letter == 'h':
-                self.chosen_c = self.chosen_c - 1
+                self.chosen_instance_item = self.chosen_instance_item - 1
             elif letter == 'j':
-                self.chosen_c = (self.chosen_c + row_len) % label_len
+                self.chosen_instance_item = (self.chosen_instance_item + row_len) % label_len
             elif letter == 'k':
-                self.chosen_c = self.chosen_c - row_len
+                self.chosen_instance_item = self.chosen_instance_item - row_len
 
-            if self.chosen_c < 0:
-                self.chosen_c += label_len
+            if self.chosen_instance_item < 0:
+                self.chosen_instance_item += label_len
 
-            n_chosen_c = self.labels[self.chosen_c]
+            n_chosen_instance_item = self.labels[self.chosen_instance_item]
 
-            o_chosen_c.unmark()
-            n_chosen_c.mark()
+            old_chosen_instance_item.unmark()
+            n_chosen_instance_item.mark()
         elif e.text() == 'D':
             print('Calling detach for region {} and instance {}'.format(self.region,
-                                                                        o_chosen_c.instance_id))
+                                                                        old_chosen_instance_item.instance_id))
 
-            instance    = o_chosen_c.instance_object
+            instance    = old_chosen_instance_item.instance_object
 
             callback = self.handle_complation()
             request_id = self.client.detach_all_enis(instance, finish_callback=callback)
@@ -260,7 +303,7 @@ class instances_view(QWidget):
             self.pending_actions[request_id] = { 'action_item': action_item, 'action_string' : action_string }
 
         elif e.text() == 'I':
-            instance = o_chosen_c.instance_object
+            instance = old_chosen_instance_item.instance_object
             # FIXME: Not all instances' username is ec2-user
             username    = 'ec2-user'
             server      = instance['public_dns']
@@ -274,7 +317,7 @@ class instances_view(QWidget):
 
             index = find_in_saved_logins(server = server, username = username,
                                          key = key, add_if_missing = True)
-            o_chosen_c.set_instance_index(index)
+            old_chosen_instance_item.set_instance_index(index)
 
             self.complete_action_item({ 'action_item': action_item, 'action_string' : action_string })
         elif e.text() == 'C':
@@ -298,7 +341,7 @@ class instances_view(QWidget):
             self.pending_actions[request_id] = { 'action_item': action_item, 'action_string' : action_string }
 
         elif e.text() == 'S': # start an instance
-            instance    = o_chosen_c.instance_object
+            instance    = old_chosen_instance_item.instance_object
 
             callback = self.handle_complation(self.widget_update_signal.emit)
             request_id = self.client.start_instance(instance, finish_callback=callback)
@@ -313,7 +356,7 @@ class instances_view(QWidget):
             self.pending_actions[request_id] = { 'action_item': action_item, 'action_string' : action_string }
 
         elif e.text() == 'F': # start an instance
-            instance    = o_chosen_c.instance_object
+            instance    = old_chosen_instance_item.instance_object
 
             request_id = self.client.stop_instance(instance, finish_callback=self.handle_complation())
             if request_id is None:
@@ -326,7 +369,7 @@ class instances_view(QWidget):
             action_item = self.add_action(action_string)
             self.pending_actions[request_id] = { 'action_item': action_item, 'action_string' : action_string }
         elif e.text() == 'c':
-            instance    = o_chosen_c.instance_object
+            instance    = old_chosen_instance_item.instance_object
 
             client = self.client
             request_id, interface = client.connect_eni(instance, finish_callback=self.handle_complation())

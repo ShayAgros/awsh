@@ -1,9 +1,10 @@
 import boto3
+
 # TODO: maybe move all such exceptions to Aws class, and have your own defined
 # exceptions ?
-import botocore.exceptions
+import botocore.exceptions as be
 import threading
-import signal, sys
+import signal
 import time
 from datetime import datetime
 import psutil
@@ -15,13 +16,14 @@ from awsh_ec2 import Aws
 from awsh_cache import awsh_cache
 from awsh_req_resp_server import start_requests_server, awsh_req_server, awsh_connection
 
-import logging, coloredlogs
+import logging
 
 # TODO: separate the request handler and the synchronous update into two
 # functions. They don't share anything in common except shared access to boto3
 
 intervals = {
     # TODO: not used, maybe remove it completely
+    "regions_get_long_name"     : 3600 * 24 * 30,
     "instance_in_pref_regions"  : 3600 * 1,
     "instance_in_all_regions"   : 3600 * 8,
     "interfaces_in_all_regions" : 3600 * 24 * 2,
@@ -66,9 +68,6 @@ class awsh_server:
         self.cache = awsh_cache()
         self.cache.read_cache()
 
-        coloredlogs.DEFAULT_LOG_FORMAT = '%(asctime)s %(name)-20s %(levelname)s %(message)s'
-        coloredlogs.install(level="INFO", stream=sys.stdout)
-
         self.logger = logging.getLogger("awsh-server")
 
     def start_requests_server(self):
@@ -96,7 +95,7 @@ class awsh_server:
         if request[0] == str(awsh_server_commands.QUERY_REGION):
             region = request[1]
 
-            logger.info('aws_server: asked to query region {}'.format(request[1]))
+            logger.info('asked to query region {}'.format(request[1]))
 
             instances, has_running_instances = self.ec2.query_instances_in_regions([region])
             reply = json.dumps(instances[region])
@@ -106,11 +105,13 @@ class awsh_server:
             cache.set_instances(instances)
             cache.set_is_running_instances(has_running_instances)
 
+            logger.debug('finished querying region')
+
         elif request[0] == str(awsh_server_commands.START_INSTANCE):
             region = request[1]
             instance_id = request[2]
 
-            logger.info('aws_server: starting instance {} in region {}'.format(instance_id, region))
+            logger.info('starting instance {} in region {}'.format(instance_id, region))
             instance_info = self.ec2.start_instance(instance_id, region, wait_to_start=True)
 
             cache = self.cache
@@ -121,23 +122,31 @@ class awsh_server:
             # it allows a race. Fix it
             reply = json.dumps(cache.get_instances(region))
 
+            logger.debug('finished starting instance {} in region {}'.format(instance_id, region))
+
         elif request[0] == str(awsh_server_commands.STOP_INSTANCE):
             region = request[1]
             instance_id = request[2]
 
-            logger.info('aws_server: stopping instance {} in region {}'.format(instance_id, region))
+            logger.info('stopping instance {} in region {}'.format(instance_id, region))
             self.ec2.stop_instance(instance_id, region, wait_until_stop=False)
+
+            logger.debug('finished stopping instance {} in region {}'.format(instance_id, region))
         elif request[0] == str(awsh_server_commands.CONNECT_ENI):
             region      = request[1]
             instance_id = request[2]
             eni         = request[3]
             index       = int(request[4])
 
+            logger.info(f'connecting eni {eni} to instance {instance_id} (as index {index}) in region {region}')
             self.ec2.connect_eni_to_instance(region, index, instance_id=instance_id, eni_id=eni)
+
+            logger.debug(f'finished connecting eni {eni} to instance {instance_id} (as index {index}) in region {region}')
         elif request[0] == str(awsh_server_commands.DETACH_ALL_ENIS):
             region      = request[1]
             instance_id = request[2]
 
+            logger.info(f'detaching all enis from instance {instance_id} in region {region}')
             # TODO: this currently results in a query done to the server to find
             # what interfaces are attached. This information should already be
             # available to the server. It can specify the ENIs to detach to the
@@ -147,6 +156,7 @@ class awsh_server:
             if detached_enis:
                 reply = json.dumps(detached_enis)
 
+            logger.debug(f'detaching all enis from instance {instance_id} in region {region}')
         else:
             logger.error('aws_server: unknown command {}'.format(request[0]))
 
@@ -172,7 +182,7 @@ class awsh_server:
 
                 try:
                     all_instances, has_running_instances = ec2.query_all_instances()
-                except botocore.exceptions.EndpointConnectionError as err:
+                except (be.EndpointConnectionError, be.ConnectTimeoutError) as err:
                     logger.warning("Failed to query EC2 due to internet failure")
                     continue
 
@@ -198,7 +208,7 @@ class awsh_server:
 
                 try:
                     all_interfaces = ec2.query_all_interfaces()
-                except botocore.exceptions.EndpointConnectionError as err:
+                except (be.EndpointConnectionError, be.ConnectTimeoutError) as err:
                     logger.warning("Failed to query EC2 due to internet failure")
                     continue
 
@@ -213,6 +223,22 @@ class awsh_server:
 
                 cache.update_record_ts('interfaces_in_all_regions', current_time.timestamp())
                 logger.info("done querying all interfaces")
+
+
+            if cache.is_record_old_enough(current_time, intervals, 'regions_get_long_name'):
+
+                logger.info("querying regions long names")
+
+                try:
+                    regions_long_names = ec2.get_regions_full_name()
+                except (be.EndpointConnectionError, be.ConnectTimeoutError) as err:
+                    logger.warning("Failed to query EC2 due to internet failure")
+                    continue
+
+                self.cache.set_regions_long_names(regions_long_names)
+
+                cache.update_record_ts('regions_get_long_name', current_time.timestamp())
+                logger.info("done querying regions long names")
 
             # update fail because of locking, retry again next time
             # TODO: maybe rename to something clearer

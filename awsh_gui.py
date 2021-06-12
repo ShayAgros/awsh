@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 
-from PyQt5 import QtWidgets
+from PyQt5 import QtWidgets, QtGui
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QWidget,
                              QGridLayout, QStackedLayout, QStackedWidget)
-import sys
+import sys, os
 
 from gui.instances_view import instances_view
 
@@ -16,6 +16,8 @@ from awsh_req_resp_server import awsh_req_client
 import threading
 import asyncore
 import time
+
+AWSH_HOME = os.path.dirname(os.path.realpath(__file__))
 
 class aws_gui(QWidget):
 
@@ -45,6 +47,7 @@ class aws_gui(QWidget):
 
         self.setLayout(self.viewStackedLayout)
 
+        self.setWindowIcon(QtGui.QIcon(AWSH_HOME + '/awsh_gui.png'))
         self.setGeometry(50, 200, 900, 900)
         self.setWindowTitle("AWS Helper")
         self.show()
@@ -63,11 +66,18 @@ class aws_gui(QWidget):
             if not len(all_regions[region]['instances']):
                 continue
 
+            region_long_name = all_regions[region]['long_name']
             instances = all_regions[region]['instances']
             interfaces = all_regions[region]['interfaces']
             has_running_instances = all_regions[region]['has_running_instances']
 
-            region_views[region] = instances_view(region, instances=instances, interfaces=interfaces, parent=self)
+            region_views[region] = instances_view(
+                    region,
+                    region_long_name=region_long_name,
+                    instances=instances,
+                    interfaces=interfaces,
+                    parent=self)
+
             if has_running_instances:
                 stacked_views.insert(0, region_views[region])
             else:

@@ -43,22 +43,31 @@ class awsh_client:
 
             # this function is called by the request client
             # after it finishes its connection with the server
-            def handle_reply(connection, server_reply):
+            def handle_reply(connection, response_success, server_reply):
                 connection.close()
-                if not handler is None:
-                    try:
-                        if server_reply != "":
-                            reply = json.loads(server_reply)
-                        else:
-                            reply = dict()
+                if handler is None:
+                    return
 
-                        handler(request_id = request_id, server_reply = reply)
-                    except:
-                        # TODO: Check that it's actually a json error. This is
-                        # just ridicules that you fail for any exception
-                        print ("Couldn't transform reply into json. reply:")
-                        print(server_reply)
-                        return
+                # If we failed the request, the reply is the string of the
+                # exception
+                if not response_success:
+                    print(f"request id {request_id} failed with status {response_success} and reply {server_reply}")
+                    handler(request_id = request_id, response_success = response_success, server_reply = server_reply)
+                    return
+
+                # replies for success are dictionaries
+                try:
+                    if server_reply != "":
+                        reply = json.loads(server_reply)
+                    else:
+                        reply = dict()
+
+                    handler(request_id = request_id, response_success = response_success, server_reply = reply)
+                except:
+                    # TODO: Check that it's actually a json error. This is
+                    # just ridicules that you fail for any exception
+                    print ("Couldn't transform reply into json. reply:")
+                    print(server_reply)
 
             req_client.send_request(request, handle_reply)
         except:
@@ -105,6 +114,7 @@ class awsh_client:
                 arguments=argument_string, request_id=request_id, handler=finish_callback)
 
         return request_id
+
 
     def refresh_instances(self, finish_callback=None):
         # assign request id
