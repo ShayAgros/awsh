@@ -12,6 +12,7 @@ def synchronize_with_lock(func):
         cache = args[0]
         cache.lock.acquire()
         result = func(*args, **kwargs)
+        cache.needs_update = True
         cache.lock.release()
 
         return result
@@ -26,11 +27,13 @@ class awsh_cache:
         self.cache = dict()
 
         self.lock = Lock()
-        pass
+        self.needs_update = False
+
 
     def create_cache(self):
         self.cache['regions'] = dict()
         self.cache['ts_dict'] = dict()
+
 
     # Only the synchronous server accesses these fields
     def is_record_old_enough(self, current_time, intervals, record):
@@ -42,6 +45,7 @@ class awsh_cache:
             prev_time = datetime.fromtimestamp(ts)
 
             return (current_time - prev_time).seconds >= intervals[record]
+
 
     # Only the synchronous server accesses these fields
     def update_record_ts(self, record, ts):
@@ -75,6 +79,7 @@ class awsh_cache:
             for region in regions:
                 self.__set_field_in_region(region=region, field=entry, value=values[region])
 
+
     def set_instances(self, instances, region=None):
         """Set list of instances in region(s) from cache
         @instances(dict): the instances in the region
@@ -82,6 +87,7 @@ class awsh_cache:
             a string for a single region, or a list in which case
             @instances would be a dictionary with keys equal to @region elements"""
         self.__set_cache_entry('instances', instances, region)
+
 
     @synchronize_with_lock
     def set_instance(self, instance, region, is_running = False):
@@ -95,6 +101,7 @@ class awsh_cache:
         """
         self.cache['regions'][region]['instances'][instance['id']] = instance
         self.cache['regions'][region]['has_running_instances'] |= is_running
+
 
     @synchronize_with_lock
     def get_instances(self, region=None):
@@ -110,9 +117,11 @@ class awsh_cache:
             except:
                 return dict()
 
+
     def set_is_running_instances(self, states, region=None):
         """Set the state of running instances"""
         self.__set_cache_entry('has_running_instances', states, region)
+
 
     def set_interfaces(self, interfaces, region=None):
         """Set list of interfaces in region(s) from cache
@@ -122,6 +131,7 @@ class awsh_cache:
             @interfaces would be a dictionary with keys equal to @region elements"""
         self.__set_cache_entry('interfaces', interfaces, region)
 
+
     def set_regions_long_names(self, regions_long_names):
         """Set dict of regions long names (e.g. Oregon for us-west-2).
 
@@ -129,6 +139,7 @@ class awsh_cache:
         the region short code (e.g. us-west-2)
         """
         self.__set_cache_entry('long_name', regions_long_names)
+
 
     @synchronize_with_lock
     def get_interfaces(self, region=None):
@@ -144,10 +155,14 @@ class awsh_cache:
             except:
                 return dict()
 
+
     def update_cache(self):
 
         if not path.exists(cache_dir):
             os.makedirs(cache_dir)
+
+        if not self.needs_update:
+            return True
 
         # duplicate logic to avoid locking a non-existent file
         if not path.isfile(cache_file):
@@ -163,12 +178,15 @@ class awsh_cache:
 
             json.dump(self.cache, f, indent=4)
 
+            self.needs_update = False
+
             try:
                 fcntl.lockf(f, fcntl.LOCK_UN)
             except:
                 print("Failed to unlock for some reason")
 
         return True
+
 
     def read_cache(self):
         cached_info = None
