@@ -58,6 +58,16 @@ class awsh_cache:
         self.cache['regions'][region][field] = value
 
     @synchronize_with_lock
+    def set_interface(self, interface_id, interface, region):
+        """Update the information of a single interface in region. If the
+        interface exists its information is overwritten
+        
+        @interface_id: the id by which this interface would be saved
+        @interface: the metadata for this interface
+        @region: the region to which this interface belongs"""
+        self.cache['regions'][region]['interfaces'][interface_id] = interface
+
+    @synchronize_with_lock
     def __set_cache_entry(self, entry, values, region=None):
         """Set an entry in the cache, e.g. instances, interfaces or
         has_running_instances field
@@ -78,7 +88,6 @@ class awsh_cache:
             regions = region
             for region in regions:
                 self.__set_field_in_region(region=region, field=entry, value=values[region])
-
 
     def set_instances(self, instances, region=None):
         """Set list of instances in region(s) from cache

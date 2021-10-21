@@ -47,6 +47,8 @@ class awsh_server_commands():
     STOP_INSTANCE=3
     CONNECT_ENI=4
     DETACH_ALL_ENIS=5
+    CREATE_ENI_AND_SUBNET=6
+    GET_CURRENT_STATE=7
 
 server_stop = False
 
@@ -87,6 +89,7 @@ class awsh_server:
            
            """
         logger = self.logger
+        cache  = self.cache
 
         logger.info("aws_server: received command {}".format(request[0]))
         # will be overridden depending on the request
@@ -100,8 +103,6 @@ class awsh_server:
             instances, has_running_instances = self.ec2.query_instances_in_regions([region])
             reply = json.dumps(instances[region])
 
-            cache = self.cache
-
             cache.set_instances(instances)
             cache.set_is_running_instances(has_running_instances)
 
@@ -113,8 +114,6 @@ class awsh_server:
 
             logger.info('starting instance {} in region {}'.format(instance_id, region))
             instance_info = self.ec2.start_instance(instance_id, region, wait_to_start=True)
-
-            cache = self.cache
 
             cache.set_instance(instance_info, region, is_running=True)
 
@@ -157,6 +156,45 @@ class awsh_server:
                 reply = json.dumps(detached_enis)
 
             logger.debug(f'detaching all enis from instance {instance_id} in region {region}')
+        elif request[0] == str(awsh_server_commands.CREATE_ENI_AND_SUBNET):
+            region                  = request[1]
+            az                      = request[2]
+            subnet_name_template    = request[3]
+            interfaces_names        = request[4:]
+
+            logger.info(f'create {len(interfaces_names)} enis with a new subnet template ({subnet_name_template}) by the names: {interfaces_names} in region {region} and az {az}')
+
+            # find a number which can be added to the subnet 
+            subnets = self.ec2.query_subnets_in_regions([region])
+            subnet_names = [ subnet['name'] for subnet in subnets[region].values() ]
+            subnet_name = ''
+            for i in range(1, 40):
+                if subnet_name_template.format(subnet_ix=i) in subnet_names:
+                    continue
+
+                subnet_name = subnet_name_template.format(subnet_ix=i)
+                interfaces_names = [name.format(subnet_ix=i) for name in interfaces_names]
+                break
+
+            if not subnet_name:
+                raise Exception("Invalid subnet name")
+
+            logger.info(f'Chosen subnet name is {subnet_name}')
+
+            subnet = self.ec2.create_subnet(region, az, subnet_name)
+            for inf_name in interfaces_names:
+                self.ec2.create_interface(inf_name, subnet)
+
+            interfaces = self.ec2.query_interfaces_in_regions([region])
+
+            reply = json.dumps(interfaces)
+
+            cache.set_interfaces(interfaces)
+
+        elif request[0] == str(awsh_server_commands.GET_CURRENT_STATE):
+            reply = json.dumps(cache.get_instances())
+            # import pickle
+            # reply = pickle.dumps(cache.get_instances())
         else:
             logger.error('aws_server: unknown command {}'.format(request[0]))
 
@@ -208,7 +246,7 @@ class awsh_server:
 
                 try:
                     all_interfaces = ec2.query_all_interfaces()
-                except (be.EndpointConnectionError, be.ConnectTimeoutError) as err:
+                except (be.EndpointConnectionError, be.ConnectTimeoutError, be.ReadTimeoutError) as err:
                     logger.warning("Failed to query EC2 due to internet failure")
                     continue
 
@@ -231,7 +269,7 @@ class awsh_server:
 
                 try:
                     regions_long_names = ec2.get_regions_full_name()
-                except (be.EndpointConnectionError, be.ConnectTimeoutError) as err:
+                except (be.EndpointConnectionError, be.ConnectTimeoutError, be.ReadTimeoutError) as err:
                     logger.warning("Failed to query EC2 due to internet failure")
                     continue
 

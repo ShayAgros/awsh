@@ -5,10 +5,25 @@ import threading
 
 import time
 import logging
+import errno
 
-AWHS_PORT=7007
+AWHS_PORT=7008
 AWSH_ACK_STR='AWSHACK'
 AWSH_RESULT_STR='AWSHRESULT'
+
+# Useful for the future
+# from functools import wraps
+# from time import time
+# def measure(func):
+    # @wraps(func)
+    # def _time_it(*args, **kwargs):
+        # start = int(round(time() * 1000))
+        # try:
+            # return func(*args, **kwargs)
+        # finally:
+            # end_ = int(round(time() * 1000)) - start
+            # print(f"Total execution time: {end_ if end_ > 0 else 0} ms")
+    # return _time_it
 
 class request_item:
     def __init__(self, connection, request_id):
@@ -116,14 +131,21 @@ class awsh_req_client(asynchat.async_chat):
     requests and receives the reply from it asynchronously (might be in a
     different order than originally sent)"""
 
-    def __init__(self):
+    def __init__(self, fail_if_no_server=False, synchronous = False):
+
+        # We're gonna loop over existing sockets if we're waiting for them to
+        # complete
+        if synchronous:
+            self.socket_map = dict()
+        else:
+            self.socket_map = None
+
+        asynchat.async_chat.__init__(self, map=self.socket_map)
 
         self.logger = logging.getLogger("awsh_req_client")
+        # coloredlogs.install(level='DEBUG', logger=logger)
+        # self.logger = logging.basicConfig(level=logging.DEBUG)
         self.logger.info('started awsh client')
-
-        asynchat.async_chat.__init__(self)
-
-        self.connected_established = False
 
         self.create_socket(socket.AF_INET, socket.SOCK_STREAM)
 
@@ -135,13 +157,20 @@ class awsh_req_client(asynchat.async_chat):
         self.received_reply = list()
 
         self.logger.debug('connecting')
+
+        self.socket.setblocking(fail_if_no_server)
+        # err = self.socket.connect_ex(('localhost', AWHS_PORT))
+        # if err:
+            # print(f"error is {err} ({errno.errorcode[err]})")
         self.connect(('localhost', AWHS_PORT))
 
     def handle_connect(self):
         self.logger.debug('client: connection succeeded')
-        self.connected_established = True
         self.set_terminator(b"\n")
         # self.push(b"hello world\n")
+
+    def is_synchronous(self):
+        return self.socket_map is not None
 
     def collect_incoming_data(self, data):
         # print('client: received data ' + str(data), flush=True)
@@ -154,9 +183,6 @@ class awsh_req_client(asynchat.async_chat):
 
         received_reply = ' '.join(self.received_reply)
         self.received_reply = []
-
-        # print('client: received complete message:')
-        # print(received_reply, flush=True)
 
         pending_commands = self.pending_commands
 
@@ -194,7 +220,7 @@ class awsh_req_client(asynchat.async_chat):
         else:
             request_response = ''
 
-        logger.debug("received reply_type:", request_response)
+        # logger.debug(f"received reply_type: {request_response}")
         response_handler = pending_commands[req_id]['res_handler']
 
         if not response_handler:
@@ -204,12 +230,13 @@ class awsh_req_client(asynchat.async_chat):
 
     def send_request(self, request, response_handler = None):
 
-        self.logger.debug('client: sending request', str(request), flush=True)
+        self.logger.debug(f'client: sending request {request}')
         
         req_id = str(self.next_request_id)
 
         self.pending_commands[req_id] = { 'ack': False,
-                                          'res_handler': response_handler }
+                                          'res_handler': response_handler
+                                        }
 
         request = '{} {}{}'.format(req_id, request, '\n')
         request = bytes(request, 'ascii')
@@ -217,6 +244,34 @@ class awsh_req_client(asynchat.async_chat):
         self.push_with_producer(producer)
 
         self.next_request_id = self.next_request_id + 1
+
+    def send_request_blocking(self, request):
+        """Send a command to the server and block until it returns.
+
+        This function returns the server's response"""
+
+
+        global response
+        response = None
+        global done
+        done = False
+
+        def handle_reply(connection, response_success, server_reply):
+            global response
+            response = server_reply
+            print("Got blocking request response")
+
+            global done
+            done = True
+            connection.close()
+
+        self.send_request(request, handle_reply)
+
+        asyncore.loop(map=self.socket_map, use_poll=True)
+
+        print("done looping")
+
+        return response
 
 class test_class:
 
@@ -236,12 +291,12 @@ if __name__ == '__main__':
     # server = awsh_req_server(test_class())
     client = awsh_req_client()
 
-    def handle_response(connection, response):
+    def handle_response(connection, response_success, server_reply):
         connection.close()
 
-    # print('sending request')
+    print('sending request')
 
-    client.send_request('1 hello', response_handler=handle_response)
+    client.send_request('1 us-east-1', response_handler=handle_response)
 
     # client.close()
 
@@ -253,4 +308,4 @@ if __name__ == '__main__':
         # client.push(b'message')
         # time.sleep(0.1)
 
-    asyncore.loop()
+    asyncore.loop(map=client.socket_map)

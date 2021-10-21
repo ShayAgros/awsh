@@ -8,6 +8,7 @@ from awsh_client import awsh_client
 
 import json
 import os
+import collections
 
 AWSH_HOME = os.path.dirname(os.path.realpath(__file__)) + '/..'
 
@@ -57,6 +58,14 @@ class ec2_instance(QFrame):
         self.instance_object = instance
 
         self.subnet_color_dict = subnet_color_dict
+
+        # TODO: Move it to the server side. The client doesn't need these values
+        # unordered anyway
+        def interface_devide_ix(interface):
+            return interface["device_index"]
+
+        # soft the interfaces by their device index
+        instance["interfaces"].sort(key=interface_devide_ix)
         self.add_interfaces(instance)
 
     def __has_multiple_cards(self):
@@ -110,8 +119,9 @@ class ec2_instance(QFrame):
 class instances_view(QWidget):
 
     # signals
-    widget_update_signal = pyqtSignal(dict)
     action_item_update_signal = pyqtSignal(dict)
+    # TODO: Transform the two upper functions to be handled by the one below
+    handle_in_main_thread_signal = pyqtSignal(list)
 
     def __init__(self, region, region_long_name, instances=dict(), interfaces=dict(), parent=None):
 
@@ -133,6 +143,7 @@ class instances_view(QWidget):
         # action_list       = label list (QListWidget)
 
         self.action_item_update_signal.connect(self.complete_action_item)
+        self.handle_in_main_thread_signal.connect(self.handle_in_main_thread)
 
         self.pending_actions = dict()
         self.client = awsh_client(region=region, instances=instances, interfaces=interfaces, subnet_color_dict=self.subnet_color_dict)
@@ -140,7 +151,19 @@ class instances_view(QWidget):
         region_str = f'{region_long_name} | {region}'
         self.region_name.setText(region_str)
         self.place_widgets(instances)
-        self.widget_update_signal.connect(self.update_instances)
+
+    def handle_in_main_thread(self, action : list):
+        """A generic signal handler which executes a function with its
+        arguments in QT main thread (usually things that require GUI change).
+        @action - a list with two items:
+                  [0] - the handler to executes
+                  [1] - the arguments to pass to the handler (dictionary)"""
+        handler = action[0]
+        arguments = action[1]
+
+        print("called to update in main thread")
+
+        handler(arguments)
 
     def update_instances(self, instances : dict):
         print("gui: Updating widgets for region", self.region)
@@ -167,7 +190,7 @@ class instances_view(QWidget):
     # TODO: check if you can use this function with several arguments instead of
     # clamping it into a dictionary. Note that you specified 'dict' in this
     # signal's definition
-    def complete_action_item(self, arguments):
+    def complete_action_item(self, arguments : dict):
         """This is meant to be invoked as a signal. Arguments is a dictionary
         which should have the attributes @action_item and @string.
         Set the string of the action
@@ -201,10 +224,13 @@ class instances_view(QWidget):
 
         def handle_request_completion(request_id, response_success, server_reply = None):
 
-            print("Received request completion")
+            print(f"Received request completion for request id {request_id}")
             # If we failed the request, don't call reply handler
             if not reply_handler is None and response_success:
-                reply_handler(server_reply)
+                # this transformation is needed. Otherwise the signal messes the
+                # order of the reply (at least when it's a dictionary)
+                server_reply = collections.OrderedDict(server_reply)
+                self.handle_in_main_thread_signal.emit([reply_handler, server_reply])
 
             if not response_success:
                 self.pending_actions[request_id]['error_string'] = f'server error: {server_reply}'
@@ -304,20 +330,15 @@ class instances_view(QWidget):
 
         elif e.text() == 'I':
             instance = old_chosen_instance_item.instance_object
-            # FIXME: Not all instances' username is ec2-user
-            username    = 'ec2-user'
-            server      = instance['public_dns']
-            key         = instance['key']
 
-            print("Adding instance {}@{} with key {} to saved logins".format(username,
-                                                                             server,
-                                                                             key))
-            action_string = "Indexing instance".format(self.region)
+            handler = old_chosen_instance_item.set_instance_index
+            index = self.client.index_instance(instance, finish_callback = handler)
+
+            inst_name   = instance['name']
+            inst_id     = instance['id']
+
+            action_string = "Indexing instance " + (f"{inst_name} ({inst_id})" if inst_name else f"{inst_id}")
             action_item = self.add_action(action_string)
-
-            index = find_in_saved_logins(server = server, username = username,
-                                         key = key, add_if_missing = True)
-            old_chosen_instance_item.set_instance_index(index)
 
             self.complete_action_item({ 'action_item': action_item, 'action_string' : action_string })
         elif e.text() == 'C':
@@ -330,8 +351,9 @@ class instances_view(QWidget):
                 instance.set_instance_index('-')
 
             self.complete_action_item({ 'action_item': action_item, 'action_string' : action_string })
+
         elif e.text() == 'R': # refresh instances in region
-            callback = self.handle_complation(self.widget_update_signal.emit)
+            callback = self.handle_complation(self.update_instances)
             request_id = self.client.refresh_instances(finish_callback=callback)
             if request_id is None:
                 return
@@ -343,7 +365,7 @@ class instances_view(QWidget):
         elif e.text() == 'S': # start an instance
             instance    = old_chosen_instance_item.instance_object
 
-            callback = self.handle_complation(self.widget_update_signal.emit)
+            callback = self.handle_complation(self.update_instances)
             request_id = self.client.start_instance(instance, finish_callback=callback)
             if request_id is None:
                 return
@@ -368,6 +390,7 @@ class instances_view(QWidget):
             action_string = "Stopping instance " + (f"{inst_name} ({inst_id})" if inst_name else f"{inst_id}")
             action_item = self.add_action(action_string)
             self.pending_actions[request_id] = { 'action_item': action_item, 'action_string' : action_string }
+
         elif e.text() == 'c':
             instance    = old_chosen_instance_item.instance_object
 
@@ -378,9 +401,20 @@ class instances_view(QWidget):
             if request_id is None:
                 return
 
-            inf_name = interface['name']
-            inf_id = interface['id']
+            if interface:
+                inf_name = interface['name']
+                inf_id = interface['id']
+                action_string = "Connecting ENI " + (f"{inf_name} ({inf_id})" if inf_name else f"{inf_id}")
+            else:
+                action_string = "Creating 2 ENIs"
 
-            action_string = "Connecting ENI " + (f"{inf_name} ({inf_id})" if inf_name else f"{inf_id}")
             action_item = self.add_action(action_string)
             self.pending_actions[request_id] = { 'action_item': action_item, 'action_string' : action_string }
+        elif e.text() == 'T':
+            instance    = old_chosen_instance_item.instance_object
+            instance_id = instance['id']
+            region      = self.region
+            
+            target_launch_str=f'aws ec2 start-instances --region {region} --instance-ids {instance_id} --additional-info "target-droplet="'
+            print(target_launch_str)
+            os.system(f"echo -n '{target_launch_str}' | xclip -selection clipboard")

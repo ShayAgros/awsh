@@ -287,6 +287,34 @@ class Aws:
 
         return all_pass_sec_group
 
+    def parse_eni_metadata(self, interface):
+        """Parse the metadata of ec2 interface object. This means extracting
+        only the information needed for awsh functionality
+
+        @interface: an interface object
+
+        @returns dictionary of metadata"""
+
+        interface_name = ''
+        if interface.tag_set:
+            for tag in interface.tag_set:
+                if tag['Key'] == 'Name':
+                    interface_name = tag['Value']
+
+        return {
+                'name'              : interface_name, 
+                'id'                : interface.id,
+                'az'                : interface.availability_zone,
+                'mac_address'       : interface.mac_address,
+                'groups'            : interface.groups,
+                'private_id'        : interface.private_ip_address,
+                'status'            : interface.status,
+                'subnet'            : interface.subnet_id,
+                'source_dest_check' : interface.source_dest_check,
+                'description'       : interface.description,
+                'availability_zone' : interface.availability_zone,
+                }
+
     def create_interface(self, name, subnet, region = None):
 
         if isinstance(subnet, str):
@@ -294,12 +322,16 @@ class Aws:
                 raise SystemExit("create_interface: passing subnet id argument requires to specify region")
             ec2 = boto3.resource('ec2', region_name=region)
             subnet = ec2.Subnet(subnet)
+        else:
+            region = subnet.availability_zone
+
+        ec2 = boto3.resource('ec2', region_name=region)
 
         print("Creating interface", name)
 
         all_pass_sec_group = self.get_subnet_all_pass_sec_group(subnet)
 
-        subnet.create_network_interface(
+        interface = subnet.create_network_interface(
                 Description         = name,
                 Groups              = [
 
@@ -321,6 +353,8 @@ class Aws:
                 ],
                 )
 
+        return self.parse_eni_metadata(interface)
+
     # TODO: add an option for this function to get a list of ENIs to detach.
     # This would save the server access
     def detach_private_enis(self, region, instance_id):
@@ -341,6 +375,38 @@ class Aws:
 
         return enis_to_detach
 
+    def _get_subnets_in_region(self, region):
+        """Qurey subnsets in a specific region"""
+        ec2 = boto3.resource('ec2', region_name=region)
+        all_subnets = ec2.subnets.all()
+
+        ret_subnets = dict()
+        for subnet in all_subnets:
+
+            # Get 'Name' tag of the instance. 'tags' attribute might not be
+            # defined
+            subnet_name = ''
+            if subnet.tags:
+                for tag in subnet.tags:
+                    if tag['Key'] == 'Name':
+                        subnet_name = tag['Value']
+
+            ret_subnets[subnet.id] = {
+                'cidr_block'    : subnet.cidr_block,
+                'name'          : subnet_name,
+                'az'            : subnet.availability_zone
+            }
+
+        return ret_subnets
+
+    def query_subnets_in_regions(self, regions):
+        """Query all subnets in specified regions"""
+        subnets = dict()
+        for region in regions:
+            subnets[region] = self._get_subnets_in_region(region)
+
+        return subnets
+
     def _get_interface_in_region(self, region):
         ec2 = boto3.resource('ec2', region_name=region)
         all_interfaces = ec2.network_interfaces.all()
@@ -349,32 +415,14 @@ class Aws:
         
         for interface in all_interfaces:
 
-            interface_name = ''
-            if interface.tag_set:
-                for tag in interface.tag_set:
-                    if tag['Key'] == 'Name':
-                        interface_name = tag['Value']
-
-            ret_interfaces[interface.id] = {
-                    'name'              : interface_name, 
-                    'id'                : interface.id,
-                    'az'                : interface.availability_zone,
-                    'mac_address'       : interface.mac_address,
-                    'groups'            : interface.groups,
-                    'private_id'        : interface.private_ip_address,
-                    'status'            : interface.status,
-                    'subnet'            : interface.subnet_id,
-                    'source_dest_check' : interface.source_dest_check,
-                    'description'       : interface.description,
-                    'availability_zone' : interface.availability_zone,
-                    }
+            ret_interfaces[interface.id] = self.parse_eni_metadata(interface)
 
         return ret_interfaces
 
     def query_interfaces_in_regions(self, regions):
         interfaces = dict()
         for region in regions:
-                interfaces[region] = self._get_interface_in_region(region)
+            interfaces[region] = self._get_interface_in_region(region)
 
         return interfaces
 
@@ -390,6 +438,47 @@ class Aws:
         regions = self.query_interfaces_in_regions(self.available_regions_list)
 
         return regions
+
+    def _get_images_in_region(self, region):
+        """Get Amazon's and private amis in a region
+        @region: the region to query
+
+        @returns a list of amis in that region"""
+        ec2 = boto3.resource('ec2', region_name=region)
+        all_amis = ec2.images.filter(
+            Owners=[
+                'self',
+                'amazon',
+            ]
+        )
+
+        # TODO: for one region it output 9298 lines of amis id. This is too much
+        # information since you also need to store meta data for each one which would
+        # multiply this output length.
+        # You can filter by OS (linux / Windows / FBSD) for now, and maybe filter name
+        # as well (so that you explicitly search for amis with the word al2 / ubuntu etc. in
+        # them).
+        #
+        # For the near future, it'd be computationally cheaper if you query ami information
+        # on the running ami alone (or even present a menu to the user asking what is the
+        # distribution).
+        #
+        # without the ability to launch amis from script, querying all amis seems wasteful
+        for ami in all_amis:
+            print(ami)
+        
+
+    def query_images_in_regions(self, regions):
+        """Get Amazon and private amis in specific regions
+        @regions: the regions in which to query for amis
+
+        @returns a dictionary with regions as keys and a list of amis as value"""
+        images = dict()
+
+        for region in regions:
+                images[region] = self._get_images_in_region(region)
+
+        return images
 
     def create_subnet(self, region, az, name, vpc = None):
         available_vpcs = 3
@@ -590,15 +679,23 @@ class Aws:
 
         return long_names
 
+def main():
+
     ec2 = Aws()
 
+    subnets = ec2.query_subnets_in_regions(["eu-west-1"])
+    print(json.dumps(subnets, indent=4))
+    # print(ec2.get_regions_full_name())
+    # ec2._get_images_in_region('us-west-2')
     # ec2.detach_private_enis('us-east-1', 'i-05f612a1327a46681')
-    subnet = ec2.create_subnet('us-west-2', 'us-west-2d', 'subnet-d-1')
-    # subnet = "subnet-05b50406575c83879"
-    # ec2.create_interface('testing-c2-i4', subnet, region='us-west-2')
-    ec2.create_interface('testing-d1-i1', subnet)
-    ec2.create_interface('testing-d1-i2', subnet)
-    # ec2.create_interface('testing-d1-i3', subnet)
+    # subnet = ec2.create_subnet('eu-central-1', 'eu-central-1c', 'subnet-c-2')
+    # res = ec2.create_interface('testing-c2-i1', subnet)
+    # res = ec2.create_interface('testing-c2-i2', subnet)
+    
+    # subnet = "subnet-01b32812da965559e"
+    # res = ec2.create_interface('testing-c1-i3', subnet, region='eu-west-1')
+    # print(res)
+    # ec2.create_interface('testing-d1-i3', subnet, region='us-west-2')
     # print(json.dumps(ec2._get_interface_in_region('us-west-2'), indent=4))
 
     # ec2.connect_eni_to_instance('eu-west-1')

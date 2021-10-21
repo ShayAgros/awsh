@@ -5,12 +5,14 @@ from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QWidget,
                              QGridLayout, QStackedLayout, QStackedWidget)
 import sys, os
+import logging, coloredlogs
 
 from gui.instances_view import instances_view
 
 from awsh_cache import awsh_cache
 from awsh_server import awsh_server_commands
 from awsh_req_resp_server import awsh_req_client
+from awsh_client import get_current_state
 
 # TODO: remove all these, they are only here for testing
 import threading
@@ -38,10 +40,37 @@ class aws_gui(QWidget):
         # alive, and handle each client's spawn. This might be related to the
         # global map of sockets. Maybe pass a custom socket map to
         # asyncore.loop()
-        self.req_client = awsh_req_client()
-        # wait_thread = threading.Timer(interval = 1, function = loop_server)
-        wait_thread = threading.Thread(target = loop_server)
-        wait_thread.start()
+        try:
+            regions = get_current_state()
+
+            # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+            # TODO: Is it really needed ? The idea was that the client would have
+            # one general socket for all regions through which it can get messages.
+            # Nevertheless, you seem to prefer creating a new socket for state query
+            # operation. You need to decide how many sockets you need open.
+            # 
+            # To achieve blocking operation it seems like the easiest way would be
+            # to use custom socket map. This makes the looping operation in this
+            # thread loop over a different socket map. You should really decide what
+            # to do here.
+            # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+            self.req_client = awsh_req_client(fail_if_no_server=True)
+            wait_thread = threading.Timer(interval = 1, function = loop_server)
+            wait_thread = threading.Thread(target = loop_server)
+            wait_thread.start()
+
+            # print("Queried regions")
+            # print("new regions are:")
+            # print(new_regions)
+        except Exception as exc:
+            print("AWSH server isn't found")
+            self.req_client = None
+
+            cache = awsh_cache()
+            if not cache.read_cache():
+                print("Failed to read cache")
+            regions = cache.get_instances()
+            # raise exc
 
         self.create_instances_views(regions)
 
@@ -49,7 +78,9 @@ class aws_gui(QWidget):
 
         self.setWindowIcon(QtGui.QIcon(AWSH_HOME + '/awsh_gui.png'))
         self.setGeometry(50, 200, 900, 900)
-        self.setWindowTitle("AWS Helper")
+        
+        window_title = "AWS Helper (" + ("not " if not self.req_client else "") + "connected)"
+        self.setWindowTitle(window_title)
         self.show()
 
     def create_instances_views(self, all_regions):
@@ -108,7 +139,10 @@ class aws_gui(QWidget):
             return
         elif key == Qt.Key_Escape or e.text() == 'q':
             self.is_alive = False
-            self.req_client.close()
+            # if it's None then no server side exists
+            if self.req_client:
+                self.req_client.close()
+            
             self.close()
         elif len(e.text()) == 1 and e.text() in 'np':
             letter = e.text()
@@ -158,11 +192,17 @@ class aws_gui(QWidget):
 if __name__ == '__main__':
     app = QApplication(sys.argv)
 
+    coloredlogs.DEFAULT_LOG_FORMAT = '%(asctime)s %(name)-20s %(levelname)s %(message)s'
+    logger = logging.getLogger("awsh_req_client")
+    coloredlogs.install(level='DEBUG', logger=logger, stream=sys.stdout)
+
     cache = awsh_cache()
     # read cached entries from file
     if not cache.read_cache():
         print("Failed to read cache")
 
-    window = aws_gui(cache.get_instances())
+    # window = aws_gui(cache.get_instances())
+    window = aws_gui(None)
+
     # window.show()
     sys.exit(app.exec_())
