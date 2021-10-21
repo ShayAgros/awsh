@@ -360,43 +360,43 @@ class awsh_client:
         return request_id
 
 
-    def __get_login_by_ami_name(self, ami_name : str):
+    def __get_login_and_kernel_by_ami_name(self, ami_name : str):
         """Try to guess the distribution login username based on the ami name.
         if not found, return 'ec2-user'"""
         ami_name = ami_name.lower()
 
         if 'amzn' in ami_name or re.search(r'\bal\b', ami_name):
-            return 'ec2-user'
+            return 'ec2-user', 'linux'
         elif 'ubuntu' in ami_name:
-            return 'ubuntu'
+            return 'ubuntu', 'linux'
         elif 'sles' in ami_name:
-            return 'ec2-user'
+            return 'ec2-user', 'linux'
         elif 'rhel' in ami_name:
-            return 'ec2-user'
+            return 'ec2-user', 'linux'
         elif 'fedora' in ami_name:
-            return 'fedora'
+            return 'fedora', 'linux'
         elif 'debian' in ami_name:
-            return 'debian'
+            return 'debian', 'linux'
         elif 'centos' in ami_name:
-            return 'centos'
+            return 'centos', 'linux'
         elif 'macos' in ami_name:
-            return 'ec2-user'
+            return 'ec2-user', 'macos'
 
-        return 'ec2-user'
+        return 'ec2-user', 'linux'
 
 
     def index_instance(self, instance, finish_callback):
         ami_name    = instance['ami_name']
         print(f'ami name is {ami_name}')
 
-        username    = self.__get_login_by_ami_name(ami_name)
+        username, kernel = self.__get_login_and_kernel_by_ami_name(ami_name)
 
-        print(f'username is {username}')
+        print(f'username is {username}, kernel is {kernel}')
         server      = instance['public_dns']
         key         = instance['key']
 
         index = find_in_saved_logins(server = server, username = username,
-                                     key = key, add_if_missing = True)
+                                     key = key, kernel = kernel, add_if_missing = True)
 
         finish_callback(index)
 

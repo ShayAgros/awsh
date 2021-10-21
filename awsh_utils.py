@@ -13,7 +13,7 @@ def clean_saved_logins():
 # to add new entries w/o deleting saved_login content each time (what would you
 # do it the entry is already there ? Move it to be the first entry ? is it
 # likely to matter if you leave it there ?)
-def find_in_saved_logins(server, username = None, key = None, add_if_missing = False):
+def find_in_saved_logins(server, username = None, key = None, kernel = "", add_if_missing = False):
     if len(server) == 0:
         return '-'
 
@@ -39,7 +39,8 @@ def find_in_saved_logins(server, username = None, key = None, add_if_missing = F
         key_path    = '{}/{}.pem'.format(KEYS_DIR, key)
         entry = {
             "server": user_server,
-            "key" : key_path
+            "key" : key_path,
+            "kernel" : kernel
         }
 
         lfile.write("{}\n".format(json.dumps(entry)))
