@@ -10,7 +10,8 @@ import re
 SUBNET_COLORS = ['#1f77b4', '#aec7e8', '#ff7f0e', '#ffbb78', '#2ca02c', '#98df8a', '#d62728', '#ff9896', '#9467bd', '#c5b0d5', '#8c564b', '#c49c94', '#e377c2', '#f7b6d2', '#7f7f7f', '#c7c7c7', '#bcbd22', '#dbdb8d', '#17becf', '#9edae5',]
 
 
-def get_current_state():
+# TODO: this probably needs to be integrated into the client
+def get_current_state(req_client = None):
     # from awsh_cache import awsh_cache
 
     # cache = awsh_cache()
@@ -19,7 +20,7 @@ def get_current_state():
     # return cache.get_instances()
 
     req_client = awsh_req_client(fail_if_no_server=True, synchronous=True)
-    command = awsh_server_commands.GET_CURRENT_STATE
+    command = awsh_server_commands.GET_CURRENT_COMPLETE_STATE
     request = '{}'.format(command)
 
     # import pickle
@@ -38,6 +39,7 @@ class awsh_client:
                  synchronous=False):
         # state variable. Holds current regions state
         self.region = region
+
         self.instances = instances
         self.interfaces = interfaces
         self.subnet_color_dict = subnet_color_dict
@@ -47,19 +49,42 @@ class awsh_client:
         self.next_req_id = 0
 
         self.synchronous = synchronous
-        pass
+
+        if not instances or not interfaces:
+            self.query_region_state()
+
+    def query_region_state(self):
+        if not self.synchronous:
+            raise Exception("No instances and subnets for asynchronous client")
+
+        # TODO: finish later
+        argument_string = f"{region}"
+        # self.send_client_command(
+            # command=awsh_server_commands.START_INSTANCE,
+            # arguments=argument_string, request_id=request_id)
+
+    def get_req_id(self):
+        request_id = self.next_req_id
+        self.next_req_id = request_id + 1
+
+        return request_id
 
     def remove_used_interfaces_from_pool(self):
         """Mark interfaces which are attached to interfaces as used. This way
         they won't be presented as an option when connecting an interface"""
 
         for instance in self.instances.values():
-            for interface in instance['interfaces']:
-                eni = interface['id']
-                # default interfaces not always listed in interfaces or the data
-                # might be stale
-                if eni in self.interfaces:
-                    self.interfaces[eni]['status'] = "in-use"
+            try:
+                for interface in instance['interfaces']:
+                    eni = interface['id']
+                    # default interfaces not always listed in interfaces or the data
+                    # might be stale
+                    if eni in self.interfaces:
+                        self.interfaces[eni]['status'] = "in-use"
+
+            except KeyError as e:
+                print(f"Couldn't find key \"{e.args[0]}\" in {instance['id']} for region {self.region}")
+
 
     def send_client_command(self, command, arguments, request_id,
                             handler=None):
@@ -69,44 +94,51 @@ class awsh_client:
 
             # this function is called by the request client
             # after it finishes its connection with the server
-            def handle_reply(connection, response_success, server_reply):
-                # synchronous requests close their own connection
-                if not self.synchronous:
-                    connection.close()
+            # TODO: Does this function needs to be inlined ?
+            # (does it access some variables in the parent function ? If not
+            # worth moving it to have smaller indentation)
+            def handle_reply(connection : awsh_req_client,
+                             response_success : bool,
+                             server_reply : str):
+
+                # we maintain a connection per-request
+                connection.close()
+
+                if not response_success:
+                    print("request id {} failed with status {} and reply {}".format(
+                          request_id, response_success, server_reply))
+
+                # transform reply back to json format
+                if response_success and server_reply != "":
+                    try:
+                        server_reply = json.loads(server_reply)
+                    except:
+                        # TODO: Check that it's actually a json error. This is
+                        # just ridicules that you fail for any exception
+                        print("Couldn't transform reply into json. reply:")
+                        print(server_reply)
+                        server_reply = dict()
+                elif response_success:
+                    # TODO: this is ugly. Fix this
+                    server_reply = dict()
 
                 if handler is None:
-                    return
+                    if not self.synchronous:
+                        return
 
-                # If we failed the request, the reply is the string of the
-                # exception
-                if not response_success:
-                    print(f"request id {request_id} failed with status {response_success} and reply {server_reply}")
-                    handler(request_id=request_id,
-                            response_success=response_success,
-                            server_reply=server_reply)
-                    return
+                    return response_success, server_reply
 
-                # replies for success are dictionaries
-                try:
-                    if server_reply != "":
-                        reply = json.loads(server_reply)
-                    else:
-                        reply = dict()
+                handler(request_id=request_id,
+                        response_success=response_success,
+                        server_reply=server_reply)
 
-                    handler(request_id=request_id,
-                            response_success=response_success,
-                            server_reply=reply)
-                except:
-                    # TODO: Check that it's actually a json error. This is
-                    # just ridicules that you fail for any exception
-                    print("Couldn't transform reply into json. reply:")
-                    print(server_reply)
+                return
 
             if not self.synchronous:
                 req_client.send_request(request, handle_reply)
             else:
                 response_success, server_reply = req_client.send_request_blocking(request)
-                handle_reply(None, response_success, server_reply)
+                return handle_reply(None, response_success, server_reply)
 
         except Exception as exc:
             print("aws_client: failed to start connection")
@@ -131,8 +163,7 @@ class awsh_client:
             self.remove_used_interfaces_from_pool()
 
         # assign request id
-        request_id = self.next_req_id
-        self.next_req_id = request_id + 1
+        request_id = self.get_req_id()
 
         # Send command to server
         argument_string="{} {}".format(self.region, instance_id)
@@ -146,8 +177,7 @@ class awsh_client:
         instance_id = instance['id']
 
         # assign request id
-        request_id = self.next_req_id
-        self.next_req_id = request_id + 1
+        request_id = self.get_req_id()
 
         # Send command to server
         argument_string="{} {}".format(self.region, instance_id)
@@ -165,8 +195,7 @@ class awsh_client:
 
         @returns request id which represents this operation"""
         # assign request id
-        request_id = self.next_req_id
-        self.next_req_id = request_id + 1
+        request_id = self.get_req_id()
 
         # Send command to server
         argument_string="{}".format(self.region)
@@ -175,30 +204,6 @@ class awsh_client:
 
         return request_id
 
-    def __choose_with_rofi(self, rofi_title, entries, custom_entry = ""):
-
-        items_desc = list()
-        items = list()
-        for item, desc in entries.items():
-            items.append(item)
-            item_desc = ""
-            if 'color' in desc:
-                item_desc = r'<span background="{}">    </span>    '.format(desc["color"])
-
-            item_desc = item_desc + desc['title']
-            items_desc.append(item_desc)
-            pass
-
-        if custom_entry != "":
-            items_desc.append(custom_entry)
-
-        index, key = r.select('Choose interface to attach', items_desc)
-
-        # the user canceled its choice
-        is_err = key != 0
-        custom_choice = index == len(items)
-
-        return is_err, custom_choice, index
 
     def __get_available_interface_in_az_list(self, az):
         """This functions returns a list containing the available ENIs
@@ -223,7 +228,7 @@ class awsh_client:
                     "entry" : interface['description'] or eni,
                     "interface" : interface
                 }
-                
+
                 subnet_id = interface['subnet']
                 if subnet_id not in subnet_color_dict:
                     new_color = SUBNET_COLORS[ len(subnet_color_dict) % len(SUBNET_COLORS) ]
@@ -237,6 +242,37 @@ class awsh_client:
 
         return possible_interfaces
 
+    def _create_enis(self, subnet : dict, enis_names : list,
+                     finish_callback = None):
+        """Create ENIs:
+        @subnet: subnet in which to create enis (a dictionary as received from
+                 server)
+        @enis_names: names of the ENIs to create
+        """
+        num_interface = len(enis_names)
+        if num_interface <= 0:
+            return None
+
+        # assign request id
+        request_id = self.get_req_id()
+
+        argument_string="{} {} {} {}".format(
+            self.region,
+            subnet['id'],
+            num_interface,
+            " ".join(enis_names))
+
+        self.send_client_command(
+            command=awsh_server_commands.CREATE_ENIS,
+            arguments=argument_string, request_id=request_id,
+            handler=finish_callback)
+
+        return request_id
+
+
+
+    # TODO: maybe move it to server's side ? There's the color issue there
+    # but you can have blocking connection here
     def __get_available_subnets_in_az_list(self, az):
         """This function returns a list of possible subnets in an
         availability zone.
@@ -277,7 +313,7 @@ class awsh_client:
 
         return possible_subnets
 
-            
+
     def _choose_subnet(self, az, finish_callback):
 
         r = awsh_rofi()
@@ -329,11 +365,10 @@ class awsh_client:
         # increase the number of enis connected to client
         num_interface = instance['num_interfaces']
         instance["num_interfaces"] = num_interface + 1
-        
+
         # assign request id
-        request_id = self.next_req_id
-        self.next_req_id = request_id + 1
-        
+        request_id = self.get_req_id()
+
         argument_string="{} {} {} {}".format(self.region, instance["id"], interface["id"], num_interface)
         self.send_client_command(command=awsh_server_commands.CONNECT_ENI,
                                  arguments=argument_string, request_id=request_id, handler=finish_callback)
@@ -355,7 +390,7 @@ class awsh_client:
 
         # choose an interface from possibilities
         is_error, index = r.multiline_selection('Choose interface to attach', possible_interfaces)
-        
+
         # user canceled the choice
         if is_error:
             return None, None
@@ -385,8 +420,7 @@ class awsh_client:
         instance_id = instance['id']
 
         # assign request id
-        request_id = self.next_req_id
-        self.next_req_id = request_id + 1
+        request_id = self.get_req_id()
 
         # Send command to server
         argument_string="{} {}".format(self.region, instance_id)

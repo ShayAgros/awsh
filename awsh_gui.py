@@ -1,25 +1,25 @@
 #!/usr/bin/env python3
 
-from PyQt5 import QtWidgets, QtGui
-from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QWidget,
-                             QGridLayout, QStackedLayout, QStackedWidget)
-import sys, os
-import logging, coloredlogs
+from PyQt5 import QtGui
+from PyQt5.QtCore import Qt
+from PyQt5.QtWidgets import (QApplication, QWidget, QStackedLayout)
+import sys
+import os
+import logging
+import coloredlogs
 
 from gui.instances_view import instances_view
 
 from awsh_cache import awsh_cache
-from awsh_server import awsh_server_commands
 from awsh_req_resp_server import awsh_req_client
 from awsh_client import get_current_state
 
 # TODO: remove all these, they are only here for testing
 import threading
 import asyncore
-import time
 
 AWSH_HOME = os.path.dirname(os.path.realpath(__file__))
+
 
 class aws_gui(QWidget):
 
@@ -30,7 +30,7 @@ class aws_gui(QWidget):
 
         def loop_server():
             while self.is_alive:
-                asyncore.loop(timeout=0.5, count = 1)
+                asyncore.loop(timeout=0.5, count=1)
             print('no longer alive, broke server loop')
 
         # setup client to server
@@ -48,21 +48,21 @@ class aws_gui(QWidget):
             # one general socket for all regions through which it can get messages.
             # Nevertheless, you seem to prefer creating a new socket for state query
             # operation. You need to decide how many sockets you need open.
-            # 
+            #
             # To achieve blocking operation it seems like the easiest way would be
             # to use custom socket map. This makes the looping operation in this
             # thread loop over a different socket map. You should really decide what
             # to do here.
             # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
             self.req_client = awsh_req_client(fail_if_no_server=True)
-            wait_thread = threading.Timer(interval = 1, function = loop_server)
-            wait_thread = threading.Thread(target = loop_server)
+            wait_thread = threading.Timer(interval=1, function=loop_server)
+            wait_thread = threading.Thread(target=loop_server)
             wait_thread.start()
 
             # print("Queried regions")
             # print("new regions are:")
             # print(new_regions)
-        except Exception as exc:
+        except Exception:
             print("AWSH server isn't found")
             self.req_client = None
 
@@ -78,8 +78,9 @@ class aws_gui(QWidget):
 
         self.setWindowIcon(QtGui.QIcon(AWSH_HOME + '/awsh_gui.png'))
         self.setGeometry(50, 200, 900, 900)
-        
-        window_title = "AWS Helper (" + ("not " if not self.req_client else "") + "connected)"
+
+        connection_status = ("" if self.req_client else "not ") + "connected"
+        window_title = "AWS Helper (" + connection_status + ")"
         self.setWindowTitle(window_title)
         self.show()
 
@@ -89,9 +90,9 @@ class aws_gui(QWidget):
 
         # use a list to affect the order in which regions are added to the
         # stacked layout
-        stacked_views = list()
-
-        region_with_online_ix = 0
+        views_with_running_instance = list()
+        views_with_running_indexed_instance = list()
+        views_wo_running_instances = list()
 
         for region in all_regions:
             if not len(all_regions[region]['instances']):
@@ -110,17 +111,20 @@ class aws_gui(QWidget):
                     parent=self)
 
             if has_running_instances:
-                stacked_views.insert(0, region_views[region])
+                views_with_running_instance.insert(0, region_views[region])
             else:
-                stacked_views.append(region_views[region])
+                views_wo_running_instances.insert(0, region_views[region])
 
-        for sv in stacked_views:
+        # add widgets from different lists. Make sure that indexed instances
+        # are shown first
+        for sv in views_with_running_instance:
+            viewStackedLayout.addWidget(sv)
+
+        for sv in views_wo_running_instances:
             viewStackedLayout.addWidget(sv)
 
         self.region_views = region_views
         self.viewStackedLayout = viewStackedLayout
-
-
 
     def update(self, label):
         label.setText("Updated")
@@ -142,7 +146,7 @@ class aws_gui(QWidget):
             # if it's None then no server side exists
             if self.req_client:
                 self.req_client.close()
-            
+
             self.close()
         elif len(e.text()) == 1 and e.text() in 'np':
             letter = e.text()

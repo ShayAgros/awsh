@@ -40,7 +40,7 @@ class awsh_cache:
             ts_dict = self.cache['ts_dict']
             if not record in ts_dict:
                 return True
-            
+
             ts = ts_dict[record]
             prev_time = datetime.fromtimestamp(ts)
 
@@ -61,7 +61,7 @@ class awsh_cache:
     def set_interface(self, interface_id, interface, region):
         """Update the information of a single interface in region. If the
         interface exists its information is overwritten
-        
+
         @interface_id: the id by which this interface would be saved
         @interface: the metadata for this interface
         @region: the region to which this interface belongs"""
@@ -126,6 +126,10 @@ class awsh_cache:
             except:
                 return dict()
 
+    @synchronize_with_lock
+    def get_region_data(self, region):
+        """Get the cache information for a single region"""
+        return self.cache['regions'][region]
 
     def set_is_running_instances(self, states, region=None):
         """Set the state of running instances"""
@@ -148,6 +152,14 @@ class awsh_cache:
         the region short code (e.g. us-west-2)
         """
         self.__set_cache_entry('long_name', regions_long_names)
+
+    def set_subnets(self, subnets, region=None):
+        """Set list of subnets in region(s) from cache
+        @subnets: the subnets in the region
+        @region: region(s) in in which the subnets belong. This can be either
+            a string for a single region, or a list in which case
+            @subnets would be a dictionary with keys equal to @region elements"""
+        self.__set_cache_entry('subnets', subnets, region)
 
 
     @synchronize_with_lock
@@ -219,7 +231,7 @@ class awsh_cache:
                 fcntl.lockf(f, fcntl.LOCK_UN)
             except:
                 print("Failed to unlock for some reason")
-        
+
         if not cached_info:
             return False
 

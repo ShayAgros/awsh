@@ -6,7 +6,6 @@ from awsh_ec2 import is_instance_running
 from awsh_utils import find_in_saved_logins, clean_saved_logins
 from awsh_client import awsh_client
 
-import json
 import os
 import collections
 
@@ -20,7 +19,7 @@ def rgb(red, green, blue):
         # rgb(7, 64, 147), rgb(6, 78, 131), rgb(6, 90, 118), rgb(5, 101, 109), rgb(5, 112, 100), rgb(6, 122, 89), rgb(6, 132, 75), rgb(7, 142, 57),
         # rgb(7, 152, 37), rgb(8, 162, 15), rgb(20, 172, 8), rgb(43, 181, 9), rgb(74, 188, 9), rgb(107, 195, 9), rgb(142, 200, 10), rgb(177, 203, 10),
         # rgb(212, 205, 10), rgb(247, 205, 83), rgb(251, 211, 169), rgb(252, 221, 203), rgb(254, 232, 224), rgb(254, 244, 240)]
-SUBNET_COLORS = ['#1f77b4', '#aec7e8', '#ff7f0e', '#ffbb78', '#2ca02c', '#98df8a', '#d62728', '#ff9896', '#9467bd', '#c5b0d5', '#8c564b', '#c49c94', '#e377c2', '#f7b6d2', '#7f7f7f', '#c7c7c7', '#bcbd22', '#dbdb8d', '#17becf', '#9edae5',] 
+SUBNET_COLORS = ['#1f77b4', '#aec7e8', '#ff7f0e', '#ffbb78', '#2ca02c', '#98df8a', '#d62728', '#ff9896', '#9467bd', '#c5b0d5', '#8c564b', '#c49c94', '#e377c2', '#f7b6d2', '#7f7f7f', '#c7c7c7', '#bcbd22', '#dbdb8d', '#17becf', '#9edae5']
 
 # SUBNET_COLORS = ['#ff0000','#ff4f00','#ff9f00','#ffee00','#c1ff00','#72ff00','#22ff00','#00ff2d','#00ff7c','#00ffcb','#00e3ff','#0094ff','#0045ff','#0a00ff','#5a00ff','#a900ff','#f700fe',
     # '#ff00b6','#ff0067','#ff0018']
@@ -54,18 +53,18 @@ class ec2_instance(QFrame):
         # Don't show the selection asterix at first
         self.sel_img.setHidden(True)
 
-        self.instance_id   = instance_id
+        self.instance_id = instance_id
         self.instance_object = instance
 
         self.subnet_color_dict = subnet_color_dict
 
         # TODO: Move it to the server side. The client doesn't need these values
         # unordered anyway
-        def interface_devide_ix(interface):
+        def interface_device_ix(interface):
             return interface["device_index"]
 
         # soft the interfaces by their device index
-        instance["interfaces"].sort(key=interface_devide_ix)
+        instance["interfaces"].sort(key=interface_device_ix)
         self.add_interfaces(instance)
 
     def __has_multiple_cards(self):
@@ -86,7 +85,7 @@ class ec2_instance(QFrame):
 
             subnet_id = interface['subnet']
             if not subnet_id in subnet_color_dict:
-                new_color = SUBNET_COLORS[ len(subnet_color_dict) % len(SUBNET_COLORS) ]
+                new_color = SUBNET_COLORS[len(subnet_color_dict) % len(SUBNET_COLORS)]
                 subnet_color_dict[subnet_id] = new_color
 
             subnet_color = subnet_color_dict[subnet_id]
@@ -116,6 +115,10 @@ class ec2_instance(QFrame):
     def set_instance_index(self, index):
         self.connection_nr.setText(str(index))
 
+    # def get_instance_index(self):
+        # return int(self.connection_nr)
+
+
 class instances_view(QWidget):
 
     # signals
@@ -123,7 +126,8 @@ class instances_view(QWidget):
     # TODO: Transform the two upper functions to be handled by the one below
     handle_in_main_thread_signal = pyqtSignal(list)
 
-    def __init__(self, region, region_long_name, instances=dict(), interfaces=dict(), parent=None):
+    def __init__(self, region, region_long_name, instances=dict(),
+                 interfaces=dict(), parent=None):
 
         super().__init__(parent)
 
@@ -137,6 +141,8 @@ class instances_view(QWidget):
         self.chosen_instance_item = 0
         self.region = region
 
+        self.lowest_instance_ix = 99
+
         # Fields added by the ui:
         # instances_layout  = the layout which holds the instances (QGridLayout)
         # region_name       = label that identifies the region (QLabel)
@@ -146,13 +152,15 @@ class instances_view(QWidget):
         self.handle_in_main_thread_signal.connect(self.handle_in_main_thread)
 
         self.pending_actions = dict()
-        self.client = awsh_client(region=region, instances=instances, interfaces=interfaces, subnet_color_dict=self.subnet_color_dict)
+        self.client = awsh_client(region=region, instances=instances,
+                                  interfaces=interfaces,
+                                  subnet_color_dict=self.subnet_color_dict)
 
         region_str = f'{region_long_name} | {region}'
         self.region_name.setText(region_str)
         self.place_widgets(instances)
 
-    def handle_in_main_thread(self, action : list):
+    def handle_in_main_thread(self, action: list):
         """A generic signal handler which executes a function with its
         arguments in QT main thread (usually things that require GUI change).
         @action - a list with two items:
@@ -165,7 +173,7 @@ class instances_view(QWidget):
 
         handler(arguments)
 
-    def update_instances(self, instances : dict):
+    def update_instances(self, instances: dict):
         print("gui: Updating widgets for region", self.region)
 
         chosen_item_ix = 0
@@ -190,7 +198,7 @@ class instances_view(QWidget):
     # TODO: check if you can use this function with several arguments instead of
     # clamping it into a dictionary. Note that you specified 'dict' in this
     # signal's definition
-    def complete_action_item(self, arguments : dict):
+    def complete_action_item(self, arguments: dict):
         """This is meant to be invoked as a signal. Arguments is a dictionary
         which should have the attributes @action_item and @string.
         Set the string of the action
@@ -198,8 +206,8 @@ class instances_view(QWidget):
         @action_item: a QListWidgetItem item
         @string: the string to set
         """
-        action_item     = arguments['action_item']
-        string          = arguments['action_string']
+        action_item = arguments['action_item']
+        string = arguments['action_string']
 
         # TODO: add coloring to the string
         if 'error_string' in arguments:
@@ -216,13 +224,13 @@ class instances_view(QWidget):
         self.action_list.addItem(list_item)
 
         return list_item
-    
+
     def handle_complation(self, reply_handler = None):
         """Create a custom completion handler. This returns a function that can
         be passed to awsh_client class. This function is called with the request
         id and server's reply"""
 
-        def handle_request_completion(request_id, response_success, server_reply = None):
+        def handle_request_completion(request_id, response_success, server_reply=None):
 
             print(f"Received request completion for request id {request_id}")
             # If we failed the request, don't call reply handler
@@ -244,8 +252,6 @@ class instances_view(QWidget):
 
         row_len = self.row_len
 
-        rows_nr = len(instances) / row_len
-
         glayout = self.instances_layout
         # remove all existing widgets from layout. This ensures that instances
         # that no longer exist don't linger in the gui version
@@ -262,11 +268,13 @@ class instances_view(QWidget):
             instance = instances[i_id]
 
             # create the instance box
-            label = ec2_instance(instance_id = i_id,
-                                 instance = instance,
-                                 subnet_color_dict = self.subnet_color_dict,
-                                 parent = self)
+            label = ec2_instance(instance_id=i_id,
+                                 instance=instance,
+                                 subnet_color_dict=self.subnet_color_dict,
+                                 parent=self)
 
+            # self.lowest_instance_ix = min(self.lowest_instance_ix,
+                                          # label.get_instance_index())
             # add to layout
             glayout.addWidget(label, i_nr // row_len,  i_nr % row_len)
 
@@ -350,6 +358,8 @@ class instances_view(QWidget):
             for instance in self.labels:
                 instance.set_instance_index('-')
 
+            # return to default value
+            self.lowest_instance_ix = 99
             self.complete_action_item({ 'action_item': action_item, 'action_string' : action_string })
 
         elif e.text() == 'R': # refresh instances in region
@@ -377,7 +387,7 @@ class instances_view(QWidget):
             action_item = self.add_action(action_string)
             self.pending_actions[request_id] = { 'action_item': action_item, 'action_string' : action_string }
 
-        elif e.text() == 'F': # start an instance
+        elif e.text() == 'F': # stop an instance
             instance    = old_chosen_instance_item.instance_object
 
             request_id = self.client.stop_instance(instance, finish_callback=self.handle_complation())
@@ -409,12 +419,29 @@ class instances_view(QWidget):
                 action_string = "Creating 2 ENIs"
 
             action_item = self.add_action(action_string)
-            self.pending_actions[request_id] = { 'action_item': action_item, 'action_string' : action_string }
+            self.pending_actions[request_id] = {'action_item': action_item, 'action_string': action_string}
         elif e.text() == 'T':
-            instance    = old_chosen_instance_item.instance_object
+            instance = old_chosen_instance_item.instance_object
             instance_id = instance['id']
-            region      = self.region
-            
-            target_launch_str=f'aws ec2 start-instances --region {region} --instance-ids {instance_id} --additional-info "target-droplet="'
+            region = self.region
+
+            target_launch_str = f'aws ec2 start-instances --region {region} --instance-ids {instance_id} --additional-info "target-droplet="'
             print(target_launch_str)
             os.system(f"echo -n '{target_launch_str}' | xclip -selection clipboard")
+        elif e.text() == 'A':
+            instance = old_chosen_instance_item.instance_object
+            instance_id = instance['id']
+            region = self.region
+
+            import json
+            script_path = os.path.dirname(os.path.abspath(__file__))
+            # TODO: dirty hack. You don't need to have this code here anyway but
+            # rather in a private file. Also the layout shouldn't be assumed in
+            # a way like this
+            script_path += "/../ec2_az.json"
+            with open(script_path, "r") as jsfile:
+                az_data = json.load(jsfile)
+
+            admiral_link = f'https://admiral-{az_data[region]}.ec2.amazon.com/search?q={instance_id}'
+            print(admiral_link)
+            os.system(f"echo -n '{admiral_link}' | xclip -selection clipboard")

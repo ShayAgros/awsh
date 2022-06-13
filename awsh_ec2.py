@@ -76,7 +76,7 @@ def _find_free_subnets(vpc, subnet_mask = 24, subnets_nr = 1):
     while current_start_ip + number_of_ips < vpc_last_ip and len(returned_ips) < subnets_nr:
 
         current_end_ip = current_start_ip + number_of_ips
-        
+
         # remove existing subnets which end before the subnet we look for
         while len(ip_range) > 0 and ip_range[0][1] < current_start_ip:
             ip_range = ip_range[1:]
@@ -301,18 +301,21 @@ class Aws:
                 if tag['Key'] == 'Name':
                     interface_name = tag['Value']
 
+        attachment = interface.attachment
+        delete_on_termination = attachment and attachment['DeleteOnTermination'] or False
         return {
-                'name'              : interface_name, 
-                'id'                : interface.id,
-                'az'                : interface.availability_zone,
-                'mac_address'       : interface.mac_address,
-                'groups'            : interface.groups,
-                'private_id'        : interface.private_ip_address,
-                'status'            : interface.status,
-                'subnet'            : interface.subnet_id,
-                'source_dest_check' : interface.source_dest_check,
-                'description'       : interface.description,
-                'availability_zone' : interface.availability_zone,
+                'name'                  : interface_name,
+                'id'                    : interface.id,
+                'az'                    : interface.availability_zone,
+                'mac_address'           : interface.mac_address,
+                'groups'                : interface.groups,
+                'private_ip'            : interface.private_ip_address,
+                'status'                : interface.status,
+                'subnet'                : interface.subnet_id,
+                'source_dest_check'     : interface.source_dest_check,
+                'description'           : interface.description,
+                'availability_zone'     : interface.availability_zone,
+                'delete_on_termination' : delete_on_termination,
                 }
 
     def create_interface(self, name, subnet, region = None):
@@ -344,7 +347,7 @@ class Aws:
                     {
                         'ResourceType'  : 'network-interface',
                         'Tags'          : [
-                            { 
+                            {
                             'Key'   : 'Name',
                             'Value' : name,
                             }
@@ -360,7 +363,7 @@ class Aws:
     def detach_private_enis(self, region, instance_id):
         ec2 = boto3.resource('ec2', region_name=region)
         instance = ec2.Instance(instance_id)
-        
+
         enis_to_detach = list()
         for interface_attr in instance.network_interfaces_attribute:
             if not interface_attr['Attachment']['DeleteOnTermination']:
@@ -375,46 +378,13 @@ class Aws:
 
         return enis_to_detach
 
-    def _get_subnets_in_region(self, region):
-        """Qurey subnsets in a specific region"""
-        ec2 = boto3.resource('ec2', region_name=region)
-        all_subnets = ec2.subnets.all()
-
-        ret_subnets = dict()
-        for subnet in all_subnets:
-
-            # Get 'Name' tag of the instance. 'tags' attribute might not be
-            # defined
-            subnet_name = ''
-            if subnet.tags:
-                for tag in subnet.tags:
-                    if tag['Key'] == 'Name':
-                        subnet_name = tag['Value']
-
-            ret_subnets[subnet.id] = {
-                'cidr_block'    : subnet.cidr_block,
-                'name'          : subnet_name,
-                'az'            : subnet.availability_zone
-            }
-
-        return ret_subnets
-
-    def query_subnets_in_regions(self, regions):
-        """Query all subnets in specified regions"""
-        subnets = dict()
-        for region in regions:
-            subnets[region] = self._get_subnets_in_region(region)
-
-        return subnets
-
     def _get_interface_in_region(self, region):
         ec2 = boto3.resource('ec2', region_name=region)
         all_interfaces = ec2.network_interfaces.all()
 
         ret_interfaces = dict()
-        
-        for interface in all_interfaces:
 
+        for interface in all_interfaces:
             ret_interfaces[interface.id] = self.parse_eni_metadata(interface)
 
         return ret_interfaces
@@ -438,6 +408,63 @@ class Aws:
         regions = self.query_interfaces_in_regions(self.available_regions_list)
 
         return regions
+
+    def parse_subnet_metadata(self, subnet):
+        """Parse the metadata of ec2 subnet object. This means extracting
+        only the information needed for awsh functionality
+
+        @subnet: an subnet object
+
+        @returns dictionary of metadata"""
+
+        subnet_name = ''
+        if subnet.tags:
+            for tag in subnet.tags:
+                if tag['Key'] == 'Name':
+                    subnet_name = tag['Value']
+
+        return {
+                'name'                  : subnet_name,
+                'id'                    : subnet.id,
+                'az'                    : subnet.availability_zone,
+                'state'                 : subnet.state,
+                'availability_zone'     : subnet.availability_zone,
+                'default_for_az'        : subnet.default_for_az,
+                }
+
+
+    def _get_subnets_in_region(self, region):
+        ec2 = boto3.resource('ec2', region_name=region)
+        all_subnets = ec2.subnets.all()
+
+        ret_subnets = dict()
+
+        for subnet in all_subnets:
+            ret_subnets[subnet.id] = self.parse_subnet_metadata(subnet)
+
+        return ret_subnets
+
+    def query_subnets_in_regions(self, regions):
+        """Query all subnets in specified regions"""
+        subnets = dict()
+        for region in regions:
+            subnets[region] = self._get_subnets_in_region(region)
+
+        return subnets
+
+    def query_all_subnets(self):
+        """List subnets in all regions available to user.
+           Caution: this operation might take a while"""
+        session = boto3.Session()
+
+        if not self.available_regions_list:
+            available_regions = session.get_available_regions('ec2')
+            self.available_regions_list = list(available_regions)
+
+        regions = self.query_subnets_in_regions(self.available_regions_list)
+
+        return regions
+
 
     def _get_images_in_region(self, region):
         """Get Amazon's and private amis in a region
@@ -466,7 +493,7 @@ class Aws:
         # without the ability to launch amis from script, querying all amis seems wasteful
         for ami in all_amis:
             print(ami)
-        
+
 
     def query_images_in_regions(self, regions):
         """Get Amazon and private amis in specific regions
@@ -511,7 +538,7 @@ class Aws:
                     {
                         'ResourceType'  : 'subnet',
                         'Tags'          : [
-                            { 
+                            {
                             'Key'   : 'Name',
                             'Value' : name,
                             }
@@ -519,7 +546,7 @@ class Aws:
                     },
                 ],
         )
-        
+
         return subnet
 
     def connect_eni_to_instance(self, region, device_index, network_card_index = 0, instance_id = None, eni_id = None):
@@ -573,7 +600,7 @@ class Aws:
                 eni_description = interface.description
 
                 interfaces_choices.append('{} {}'.format(eni_id, eni_description))
-            
+
             if not interfaces_choices:
                 print("No available interface, please create some")
                 return
@@ -601,7 +628,7 @@ class Aws:
 
     def terminate_instance(self, instance_id, region):
         ec2 = boto3.resource('ec2', region_name=region)
-        
+
         instance = ec2.Instance(instance_id)
         try:
             instance.terminate()
@@ -613,7 +640,7 @@ class Aws:
 
     def start_instance(self, instance_id, region, wait_to_start=False):
         ec2 = boto3.resource('ec2', region_name=region)
-        
+
         instance = ec2.Instance(instance_id)
         try:
             # TODO: this function has use_cache option which isn't implemented.
@@ -635,7 +662,7 @@ class Aws:
 
     def stop_instance(self, instance_id, region, wait_until_stop=False):
         ec2 = boto3.resource('ec2', region_name=region)
-        
+
         instance = ec2.Instance(instance_id)
         try:
             instance.stop()
@@ -683,15 +710,17 @@ def main():
 
     ec2 = Aws()
 
-    subnets = ec2.query_subnets_in_regions(["eu-west-1"])
-    print(json.dumps(subnets, indent=4))
+    # subnets = ec2.query_subnets_in_regions(["eu-west-1"])
+    # interfaces = ec2.query_interfaces_in_regions(["eu-west-1"])
+    # print(json.dumps(subnets, indent=4))
     # print(ec2.get_regions_full_name())
     # ec2._get_images_in_region('us-west-2')
     # ec2.detach_private_enis('us-east-1', 'i-05f612a1327a46681')
-    # subnet = ec2.create_subnet('eu-central-1', 'eu-central-1c', 'subnet-c-2')
-    # res = ec2.create_interface('testing-c2-i1', subnet)
-    # res = ec2.create_interface('testing-c2-i2', subnet)
-    
+    subnet = ec2.create_subnet('eu-central-1', 'eu-central-1c', 'subnet-c-2')
+    res = ec2.create_interface('testing-c2-i1', subnet)
+    res = ec2.create_interface('testing-c2-i2', subnet)
+
+
     # subnet = "subnet-01b32812da965559e"
     # res = ec2.create_interface('testing-c1-i3', subnet, region='eu-west-1')
     # print(res)

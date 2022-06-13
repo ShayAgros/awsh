@@ -27,8 +27,9 @@ intervals = {
     "instance_in_pref_regions"  : 3600 * 1,
     "instance_in_all_regions"   : 3600 * 8,
     "interfaces_in_all_regions" : 3600 * 24 * 2,
+    "subnets_in_all_regions"    : 3600 * 24 * 2,
     # "all_amis": 3600 * 24,
-    # "all_instance_size": 3600 * 24, 
+    # "all_instance_size": 3600 * 24,
     }
 
 def update(dict1, dict2):
@@ -46,9 +47,13 @@ class awsh_server_commands():
     START_INSTANCE=2
     STOP_INSTANCE=3
     CONNECT_ENI=4
-    DETACH_ALL_ENIS=5
-    CREATE_ENI_AND_SUBNET=6
-    GET_CURRENT_STATE=7
+    CREATE_ENIS=5
+    CREATE_SUBNET=6
+    CREATE_ENI_AND_SUBNET=7
+    DETACH_ALL_ENIS=8
+    GET_CURRENT_REGION_STATE=9
+    GET_CURRENT_COMPLETE_STATE=10
+    GET_SUBNETS=11
 
 server_stop = False
 
@@ -82,16 +87,16 @@ class awsh_server:
     def process_request(self, request: list, connection: awsh_connection):
         """This function is the needs to be implemented for awsh_req_server.  It
         is called each time a request is submitted.
-            
+
             @request:       An array of words
             @connection:    Object upon which call complete_request once the
-                            operation is completed 
-           
+                            operation is completed
+
            """
         logger = self.logger
         cache  = self.cache
 
-        logger.info("aws_server: received command {}".format(request[0]))
+        logger.debug("aws_server: received command {}".format(request[0]))
         # will be overridden depending on the request
         reply = ''
 
@@ -156,6 +161,10 @@ class awsh_server:
                 reply = json.dumps(detached_enis)
 
             logger.debug(f'detaching all enis from instance {instance_id} in region {region}')
+
+        elif request[0] == str(awsh_server_commands.CREATE_ENIS):
+            pass
+
         elif request[0] == str(awsh_server_commands.CREATE_ENI_AND_SUBNET):
             region                  = request[1]
             az                      = request[2]
@@ -164,7 +173,7 @@ class awsh_server:
 
             logger.info(f'create {len(interfaces_names)} enis with a new subnet template ({subnet_name_template}) by the names: {interfaces_names} in region {region} and az {az}')
 
-            # find a number which can be added to the subnet 
+            # find a number which can be added to the subnet
             subnets = self.ec2.query_subnets_in_regions([region])
             subnet_names = [ subnet['name'] for subnet in subnets[region].values() ]
             subnet_name = ''
@@ -191,12 +200,18 @@ class awsh_server:
 
             cache.set_interfaces(interfaces)
 
-        elif request[0] == str(awsh_server_commands.GET_CURRENT_STATE):
+        elif request[0] == str(awsh_server_commands.GET_CURRENT_REGION_STATE):
+            region = request[1]
+
+            logger.info(f"asked for current state for region {region}")
+            reply = json.dumps(cache.get_region_data(region))
+        elif request[0] == str(awsh_server_commands.GET_CURRENT_COMPLETE_STATE):
+            logger.info("asked for current complete state")
             reply = json.dumps(cache.get_instances())
-            # import pickle
-            # reply = pickle.dumps(cache.get_instances())
         else:
             logger.error('aws_server: unknown command {}'.format(request[0]))
+
+        logger.debug(f"Replying command {request[0]}")
 
         connection.complete_request(reply=reply)
 
@@ -205,11 +220,11 @@ class awsh_server:
         logger = self.logger
 
         while not server_stop:
-            
+
             time.sleep(5)
             # TODO: is there any benefit to having it cached ?
             ec2 = self.ec2
-            
+
             cache = self.cache
 
             current_time = datetime.now()
@@ -278,6 +293,22 @@ class awsh_server:
                 cache.update_record_ts('regions_get_long_name', current_time.timestamp())
                 logger.info("done querying regions long names")
 
+
+            if cache.is_record_old_enough(current_time, intervals, 'subnets_in_all_regions'):
+
+                logger.info("querying regions subnets")
+
+                try:
+                    subnets = ec2.query_all_subnets()
+                except (be.EndpointConnectionError, be.ConnectTimeoutError, be.ReadTimeoutError) as err:
+                    logger.warning("Failed to query EC2 due to internet failure")
+                    continue
+
+                self.cache.set_subnets(subnets)
+
+                cache.update_record_ts('subnets_in_all_regions', current_time.timestamp())
+                logger.info("done querying subnet data")
+
             # update fail because of locking, retry again next time
             # TODO: maybe rename to something clearer
             cache.update_cache()
@@ -304,7 +335,7 @@ def start_server(args):
        args is unused, but declared to be consistent with other awsh subcommands"""
 
     try:
-        # This would prevent more than one process to be ran
+        # This would prevent more than one process to be run
         with PidFile('awsh_server_daemon') as p:
             signal.signal(signal.SIGINT, signal_handler)
             signal.signal(signal.SIGTERM, signal_handler)

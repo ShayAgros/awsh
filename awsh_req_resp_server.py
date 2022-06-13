@@ -7,7 +7,7 @@ import time
 import logging
 import errno
 
-AWHS_PORT=7008
+AWHS_PORT=7007
 AWSH_ACK_STR='AWSHACK'
 AWSH_RESULT_STR='AWSHRESULT'
 
@@ -30,7 +30,7 @@ class request_item:
         self.request_id = request_id
         self.connection = connection
         return
-    
+
     def complete_request(self, reply = '', success = True):
         self.connection.complete_request(self.request_id, reply, success)
 
@@ -46,7 +46,7 @@ class awsh_connection(asynchat.async_chat):
         self.request_object = request_object
 
         self.set_terminator(b"\n")
-        return
+
 
     def collect_incoming_data(self, data):
         """Read an incoming request from the client and store it in the request
@@ -54,6 +54,21 @@ class awsh_connection(asynchat.async_chat):
         self.logger.debug('Received partial message: ' + str(data))
         ddata = data.decode('ascii')
         self.received_data.append(ddata)
+
+
+    # override default push function. It's the same as in asynchat but without
+    # initiating the send explicitly. The asyncore.loop() takes care to do so
+    def push(self, data):
+        if not isinstance(data, (bytes, bytearray, memoryview)):
+            raise TypeError('data argument must be byte-ish (%r)',
+                            type(data))
+        sabs = self.ac_out_buffer_size
+        if len(data) > sabs:
+            for i in range(0, len(data), sabs):
+                self.producer_fifo.append(data[i:i+sabs])
+        else:
+            self.producer_fifo.append(data)
+
 
     def found_terminator(self):
         # We received a request. Ack it, and put it into processing
@@ -73,6 +88,7 @@ class awsh_connection(asynchat.async_chat):
                 self.request_object.process_request(request_command[1:], req_item)
             except Exception as e:
                 req_item.complete_request(reply=str(e), success=False)
+
             return
 
         job = threading.Thread(target=process_request)
@@ -80,13 +96,16 @@ class awsh_connection(asynchat.async_chat):
 
         self.received_data = []
 
+
     def complete_request(self, req_id, response, success):
-        self.logger.debug ('completed request id: ' + str(req_id))
         reply = '{} {} {} {}{}'.format(req_id, AWSH_RESULT_STR, int(success), response, '\n')
         reply_bytes = bytes(reply, 'ascii')
 
+        self.logger.debug (f'completed request id {req_id} (size {len(reply_bytes)})')
         # reply the response
         self.push(reply_bytes)
+        # close connection on your side
+        # self.close()
 
 class awsh_req_server(asyncore.dispatcher):
     """This server waits for requests and passes them to @request_object using
@@ -111,8 +130,11 @@ class awsh_req_server(asyncore.dispatcher):
         self.bind(('localhost', AWHS_PORT))
         self.address = self.socket.getsockname()
         return
+
+
     def start_server(self):
         self.listen(5)
+
 
     def handle_accept(self):
         self.logger.debug("Accepted a connection")
@@ -131,7 +153,7 @@ class awsh_req_client(asynchat.async_chat):
     requests and receives the reply from it asynchronously (might be in a
     different order than originally sent)"""
 
-    def __init__(self, fail_if_no_server=False, synchronous = False):
+    def __init__(self, fail_if_no_server=False, synchronous=False):
 
         # We're gonna loop over existing sockets if we're waiting for them to
         # complete
@@ -164,6 +186,7 @@ class awsh_req_client(asynchat.async_chat):
             # print(f"error is {err} ({errno.errorcode[err]})")
         self.connect(('localhost', AWHS_PORT))
 
+
     def handle_connect(self):
         self.logger.debug('client: connection succeeded')
         self.set_terminator(b"\n")
@@ -175,6 +198,7 @@ class awsh_req_client(asynchat.async_chat):
     def collect_incoming_data(self, data):
         # print('client: received data ' + str(data), flush=True)
 
+        self.logger.debug(f'Received partial mesasge of len {len(data)}')
         self.received_reply.append(str(data, 'ascii'))
 
     def found_terminator(self):
@@ -183,6 +207,8 @@ class awsh_req_client(asynchat.async_chat):
 
         received_reply = ' '.join(self.received_reply)
         self.received_reply = []
+
+        logger.debug(f"Received reply of length {len(received_reply)}")
 
         pending_commands = self.pending_commands
 
@@ -212,11 +238,13 @@ class awsh_req_client(asynchat.async_chat):
             self.close()
             return
 
+        logger.debug("client: Received response. req id: {}".format(req_id))
+
         request_success = bool(int(reply[2]))
-            
+
         # parse the response
         if len(reply) > 3:
-            request_response = ' '.join(reply[3:])
+            request_response = ''.join(reply[3:])
         else:
             request_response = ''
 
@@ -231,7 +259,7 @@ class awsh_req_client(asynchat.async_chat):
     def send_request(self, request, response_handler = None):
 
         self.logger.debug(f'client: sending request {request}')
-        
+
         req_id = str(self.next_request_id)
 
         self.pending_commands[req_id] = { 'ack': False,
@@ -250,28 +278,24 @@ class awsh_req_client(asynchat.async_chat):
 
         This function returns the server's response"""
 
-
         global response
         response = None
-        global done
-        done = False
 
         def handle_reply(connection, response_success, server_reply):
             global response
-            response = server_reply
+            response = response_success, server_reply
             print("Got blocking request response")
 
-            global done
-            done = True
             connection.close()
 
         self.send_request(request, handle_reply)
 
-        asyncore.loop(map=self.socket_map, use_poll=True)
+        asyncore.loop(map=self.socket_map)
 
         print("done looping")
 
         return response
+
 
 class test_class:
 
@@ -280,6 +304,7 @@ class test_class:
            It is called each time a request is submitted."""
 
         connection.complete_request()
+
 
 def start_requests_server(req_server):
     req_server.start_server()
