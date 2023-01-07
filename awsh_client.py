@@ -50,8 +50,10 @@ class awsh_client:
 
         self.synchronous = synchronous
 
-        if not instances or not interfaces:
-            self.query_region_state()
+        # TODO: why is it actually needed ? A client could be initialized
+        # without any data, and it's ok
+        # if not instances or not interfaces:
+            # self.query_region_state()
 
     def query_region_state(self):
         if not self.synchronous:

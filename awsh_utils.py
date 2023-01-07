@@ -1,10 +1,25 @@
 from os.path import expanduser
 import json
+import os
 
 INSTANCES_DIR = expanduser("~") + '/saved_instances'
 LOGIN_FILE = INSTANCES_DIR + '/saved_logins'
 
 KEYS_DIR = expanduser("~") + '/keys'
+
+SUBNET_COLORS = ['#1f77b4', '#aec7e8', '#ff7f0e', '#ffbb78', '#2ca02c', '#98df8a', '#d62728', '#ff9896', '#9467bd', '#c5b0d5', '#8c564b', '#c49c94', '#e377c2', '#f7b6d2', '#7f7f7f', '#c7c7c7', '#bcbd22', '#dbdb8d', '#17becf', '#9edae5']
+subnets_colors = dict()
+def awsh_get_subnet_color(region : str, subnet_id : str):
+    """Return a color for a specific region and subnet strings. The same color would
+    be returned from all invocations with the same arguments"""
+    region_colors = subnets_colors.get(region, dict())
+    subnets_colors[region] = region_colors
+    
+    if subnet_id not in region_colors:
+        new_color = SUBNET_COLORS[len(region_colors) % len(SUBNET_COLORS)]
+        region_colors[subnet_id] = new_color
+
+    return region_colors[subnet_id]
 
 
 def clean_saved_logins():
@@ -20,6 +35,9 @@ def find_in_saved_logins(server, username=None, key=None, kernel="",
                          ami_name="", add_if_missing=False):
     if len(server) == 0:
         return '-'
+
+    if not os.path.exists(INSTANCES_DIR):
+        os.mkdir(INSTANCES_DIR)
 
     # create the login file if it doesn't exist
     with open(LOGIN_FILE, "a"):

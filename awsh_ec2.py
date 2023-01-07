@@ -3,7 +3,6 @@
 import boto3
 import botocore.exceptions
 
-from PyInquirer import prompt
 import sys
 import json
 
@@ -93,6 +92,9 @@ def _find_free_subnets(vpc, subnet_mask = 24, subnets_nr = 1):
     return ips_cidr
 
 def choose_from_list(qprompt, choices):
+    # There's some issue with this module on the mac Python. Probably this whole
+    # infra can be removed
+    from PyInquirer import prompt
 
     options = [
             {
@@ -106,7 +108,6 @@ def choose_from_list(qprompt, choices):
     answer = prompt(options)
 
     return answer['question']
-    print("You chose " + answer['instances'])
 
 class Aws:
 
@@ -130,7 +131,7 @@ class Aws:
 
         has_running_instances = False
 
-        ret_instances = dict()
+        ret_instances = list()
         for instance in all_instances:
             # don't return terminated instances
             if instance.state['Code'] == TERMINATED_STATE_CODE:
@@ -138,7 +139,6 @@ class Aws:
             if instance.state['Code'] == RUNNING_STATE_CODE:
                 has_running_instances = True
 
-            availability_zone = ''
             interfaces = list()
             for interface_attr in instance.network_interfaces_attribute:
                 card_id_index = 0
@@ -171,7 +171,7 @@ class Aws:
                     if tag['Key'] == 'Name':
                         instance_name = tag['Value']
 
-            ret_instances[instance.id] = {
+            ret_instances.append({
                 'name'              : instance_name,
                 'id'                : instance.id,
                 'ena_support'       : instance.ena_support,
@@ -183,10 +183,11 @@ class Aws:
                 'public_dns'        : instance.public_dns_name,
                 'public_ip'         : instance.public_ip_address,
                 'placement'         : instance.placement,
+                'az'                : instance.placement["AvailabilityZone"],
                 'instance_type'     : instance.instance_type,
                 'interfaces'        : interfaces,
                 'num_interfaces'    : len(interfaces),
-            }
+            })
 
         return ret_instances, has_running_instances
 
@@ -195,7 +196,11 @@ class Aws:
         has_running_instances = dict()
 
         for region in regions:
-            instances[region], has_running_instances[region] = self.get_instance_in_region(region)
+            try:
+                instances[region], has_running_instances[region] = self.get_instance_in_region(region)
+            except:
+                print("Failed to query region", region)
+                instances[region], has_running_instances[region] = list(), False
 
         return instances, has_running_instances
 
@@ -392,7 +397,11 @@ class Aws:
     def query_interfaces_in_regions(self, regions):
         interfaces = dict()
         for region in regions:
-            interfaces[region] = self._get_interface_in_region(region)
+            try:
+                interfaces[region] = self._get_interface_in_region(region)
+            except:
+                print("Failed to query interfaces in region", region)
+                interfaces[region] = dict()
 
         return interfaces
 
@@ -448,7 +457,11 @@ class Aws:
         """Query all subnets in specified regions"""
         subnets = dict()
         for region in regions:
-            subnets[region] = self._get_subnets_in_region(region)
+            try:
+                subnets[region] = self._get_subnets_in_region(region)
+            except:
+                print("Failed to query subnets in region", region)
+                subnets[region] = dict()
 
         return subnets
 
@@ -716,9 +729,9 @@ def main():
     # print(ec2.get_regions_full_name())
     # ec2._get_images_in_region('us-west-2')
     # ec2.detach_private_enis('us-east-1', 'i-05f612a1327a46681')
-    subnet = ec2.create_subnet('eu-central-1', 'eu-central-1c', 'subnet-c-2')
-    res = ec2.create_interface('testing-c2-i1', subnet)
-    res = ec2.create_interface('testing-c2-i2', subnet)
+    # subnet = ec2.create_subnet('eu-central-1', 'eu-central-1c', 'subnet-c-2')
+    # res = ec2.create_interface('testing-c2-i1', subnet)
+    # res = ec2.create_interface('testing-c2-i2', subnet)
 
 
     # subnet = "subnet-01b32812da965559e"
@@ -731,7 +744,7 @@ def main():
 
     # print(json.dumps(ec2.start_instance('i-0ffff7e457b178ba8', 'us-west-2', wait_to_start=True), indent=4))
     # ec2.query_all_instances()
-    # print(json.dumps(ec2.quary_preferred_regions(), indent = 4))
+    print(json.dumps(ec2.query_all_instances(), indent = 4))
     # print(json.dumps(ec2.query_all_instances(), indent=4))
     # ec2.print_online_instances()
 

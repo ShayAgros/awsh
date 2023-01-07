@@ -9,6 +9,7 @@ import logging
 import coloredlogs
 
 from gui.instances_view import instances_view
+from gui.region_view import region_view as instances_view_v2
 
 from awsh_cache import awsh_cache
 from awsh_req_resp_server import awsh_req_client
@@ -98,17 +99,16 @@ class aws_gui(QWidget):
             if not len(all_regions[region]['instances']):
                 continue
 
-            region_long_name = all_regions[region]['long_name']
+            region_long_name = all_regions[region].get('long_name', '')
             instances = all_regions[region]['instances']
-            interfaces = all_regions[region]['interfaces']
-            has_running_instances = all_regions[region]['has_running_instances']
+            interfaces = all_regions[region].get('interfaces', dict())
+            has_running_instances = all_regions[region].get('has_running_instances', False)
 
-            region_views[region] = instances_view(
+            region_views[region] = instances_view_v2(
                     region,
                     region_long_name=region_long_name,
                     instances=instances,
-                    interfaces=interfaces,
-                    parent=self)
+                    interfaces=interfaces)
 
             if has_running_instances:
                 views_with_running_instance.insert(0, region_views[region])
@@ -209,4 +209,4 @@ if __name__ == '__main__':
     window = aws_gui(None)
 
     # window.show()
-    sys.exit(app.exec_())
+    sys.exit(app.exec())

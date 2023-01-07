@@ -1,123 +1,16 @@
-from PyQt5.QtWidgets import (QWidget, QFrame, QListWidgetItem, QLabel, QGridLayout)
+from PyQt5.QtWidgets import (QWidget, QListWidgetItem)
 from PyQt5.QtCore import pyqtSignal, Qt
 from PyQt5.uic import loadUi
 
-from awsh_ec2 import is_instance_running
-from awsh_utils import find_in_saved_logins, clean_saved_logins
+from awsh_utils import clean_saved_logins
 from awsh_client import awsh_client
+
+from gui.instance import ec2_instance as ec2_instance_v2
 
 import os
 import collections
 
 AWSH_HOME = os.path.dirname(os.path.realpath(__file__)) + '/..'
-
-# SUBNET_COLORS = ['#fff3d0', '#e7d0ff', '#2f5a9dff', '#912f9dff', '#9d2f2fff', '#6e6a12ff', '#c00909ff']
-def rgb(red, green, blue):
-    return '#%02x%02x%02x' % (red, green, blue)
-
-# SUBNET_COLORS = [rgb(27, 1, 29), rgb(36, 3, 55), rgb(39, 4, 79), rgb(38, 5, 105), rgb(31, 6, 133), rgb(25, 8, 158), rgb(8, 21, 175), rgb(8, 46, 165),
-        # rgb(7, 64, 147), rgb(6, 78, 131), rgb(6, 90, 118), rgb(5, 101, 109), rgb(5, 112, 100), rgb(6, 122, 89), rgb(6, 132, 75), rgb(7, 142, 57),
-        # rgb(7, 152, 37), rgb(8, 162, 15), rgb(20, 172, 8), rgb(43, 181, 9), rgb(74, 188, 9), rgb(107, 195, 9), rgb(142, 200, 10), rgb(177, 203, 10),
-        # rgb(212, 205, 10), rgb(247, 205, 83), rgb(251, 211, 169), rgb(252, 221, 203), rgb(254, 232, 224), rgb(254, 244, 240)]
-SUBNET_COLORS = ['#1f77b4', '#aec7e8', '#ff7f0e', '#ffbb78', '#2ca02c', '#98df8a', '#d62728', '#ff9896', '#9467bd', '#c5b0d5', '#8c564b', '#c49c94', '#e377c2', '#f7b6d2', '#7f7f7f', '#c7c7c7', '#bcbd22', '#dbdb8d', '#17becf', '#9edae5']
-
-# SUBNET_COLORS = ['#ff0000','#ff4f00','#ff9f00','#ffee00','#c1ff00','#72ff00','#22ff00','#00ff2d','#00ff7c','#00ffcb','#00e3ff','#0094ff','#0045ff','#0a00ff','#5a00ff','#a900ff','#f700fe',
-    # '#ff00b6','#ff0067','#ff0018']
-
-class ec2_instance(QFrame):
-
-    def __init__(self, instance_id, instance, subnet_color_dict, parent = None):
-
-        super().__init__(parent)
-
-        loadUi(AWSH_HOME + "/gui/uis/instance.ui", self)
-
-        self.default_color = "#c9e4c9"
-        self.chosen_color  = "#4080bf"
-
-        if is_instance_running(instance):
-            instance_ix_str = str(find_in_saved_logins(instance['public_dns']))
-        else:
-            instance_ix_str = '-'
-
-        tag_name = instance["name"] if instance["name"] != "" else instance["id"]
-        self.tag_name.setText(tag_name)
-        self.connection_nr.setText(instance_ix_str)
-        self.instance_type.setText(instance["instance_type"])
-
-        # This property affects how the color of the instance object
-        # We currently only allow to states
-        instance_state = "running" if instance["state"]["Name"] == "running" else "stopped"
-        self.setProperty("instance_state", instance_state)
-
-        # Don't show the selection asterix at first
-        self.sel_img.setHidden(True)
-
-        self.instance_id = instance_id
-        self.instance_object = instance
-
-        self.subnet_color_dict = subnet_color_dict
-
-        # TODO: Move it to the server side. The client doesn't need these values
-        # unordered anyway
-        def interface_device_ix(interface):
-            return interface["device_index"]
-
-        # soft the interfaces by their device index
-        instance["interfaces"].sort(key=interface_device_ix)
-        self.add_interfaces(instance)
-
-    def __has_multiple_cards(self):
-        """returns whether this instance has multiple cards attached to it"""
-        return 'p4d' in self.instance_object['instance_type']
-
-    def add_interfaces(self, instance):
-        self.interfaces_layout.setAlignment(Qt.AlignLeft)
-
-        subnet_color_dict = self.subnet_color_dict
-
-        interfaces_labels = list()
-        for interface in instance["interfaces"]:
-            description = interface['description']
-            # label = QLabel(description)
-            label = QLabel()
-            self.interfaces_layout.addWidget(label)
-
-            subnet_id = interface['subnet']
-            if not subnet_id in subnet_color_dict:
-                new_color = SUBNET_COLORS[len(subnet_color_dict) % len(SUBNET_COLORS)]
-                subnet_color_dict[subnet_id] = new_color
-
-            subnet_color = subnet_color_dict[subnet_id]
-
-            label.setStyleSheet(f'background-color: {subnet_color}')
-
-            # set card index (only for cards with multiple cards)
-            if self.__has_multiple_cards():
-                label.setText(str(interface['card_id_index']))
-
-            interfaces_labels.append(label)
-
-    def mark(self):
-        self.sel_img.setHidden(False)
-        # self.setProperty("chosen", True)
-        # self.style().polish(self)
-        # self.update()
-        pass
-
-    def unmark(self):
-        self.sel_img.setHidden(True)
-        # self.setProperty("chosen", False)
-        # self.style().polish(self)
-        # self.update()
-        pass
-
-    def set_instance_index(self, index):
-        self.connection_nr.setText(str(index))
-
-    # def get_instance_index(self):
-        # return int(self.connection_nr)
-
 
 class instances_view(QWidget):
 
@@ -127,9 +20,9 @@ class instances_view(QWidget):
     handle_in_main_thread_signal = pyqtSignal(list)
 
     def __init__(self, region, region_long_name, instances=dict(),
-                 interfaces=dict(), parent=None):
+                 interfaces=dict()):
 
-        super().__init__(parent)
+        super().__init__()
 
         loadUi(AWSH_HOME + "/gui/uis/instances_view.ui", self)
 
@@ -253,6 +146,10 @@ class instances_view(QWidget):
         row_len = self.row_len
 
         glayout = self.instances_layout
+
+        glayout.setAlignment(Qt.AlignmentFlag.AlignLeft |
+                             Qt.AlignmentFlag.AlignTop)
+    
         # remove all existing widgets from layout. This ensures that instances
         # that no longer exist don't linger in the gui version
         while glayout.count():
@@ -268,10 +165,13 @@ class instances_view(QWidget):
             instance = instances[i_id]
 
             # create the instance box
-            label = ec2_instance(instance_id=i_id,
-                                 instance=instance,
-                                 subnet_color_dict=self.subnet_color_dict,
-                                 parent=self)
+            # label = ec2_instance(instance_id=i_id,
+                                 # instance=instance,
+                                 # subnet_color_dict=self.subnet_color_dict,
+                                 # parent=self)
+            label = ec2_instance_v2(
+                instance=instance,
+                region=self.region)
 
             # self.lowest_instance_ix = min(self.lowest_instance_ix,
                                           # label.get_instance_index())
@@ -321,7 +221,7 @@ class instances_view(QWidget):
             print('Calling detach for region {} and instance {}'.format(self.region,
                                                                         old_chosen_instance_item.instance_id))
 
-            instance    = old_chosen_instance_item.instance_object
+            instance = old_chosen_instance_item.instance_object
 
             callback = self.handle_complation()
             request_id = self.client.detach_all_enis(instance, finish_callback=callback)
