@@ -3,9 +3,10 @@ import os.path as path
 from threading import Lock
 from datetime import datetime
 import json
+from typing import Union
 
 cache_dir = path.expanduser('~/') + ".cache/awsh"
-cache_file = cache_dir+ "/info"
+cache_file = cache_dir + "/info"
 
 def synchronize_with_lock(func):
     def synchronize(*args, **kwargs):
@@ -89,9 +90,9 @@ class awsh_cache:
             for region in regions:
                 self.__set_field_in_region(region=region, field=entry, value=values[region])
 
-    def set_instances(self, instances, region=None):
+    def set_instances(self, instances : Union[list, dict], region : Union[str, list, None] = None):
         """Set list of instances in region(s) from cache
-        @instances(dict): the instances in the region
+        @instances(list): the instances in the region
         @region(str/list): region(s) in in which the instances belong. This can be either
             a string for a single region, or a list in which case
             @instances would be a dictionary with keys equal to @region elements"""
@@ -99,17 +100,30 @@ class awsh_cache:
 
 
     @synchronize_with_lock
-    def set_instance(self, instance, region, is_running = False):
+    def set_instance(self, instance : dict, region : str, is_running = None):
         """Update a single instance entry in the cache
         @instance: the instance data. This data should contain 'id' field
-            which identifies its id
+                   which identifies its id
         @region: the instance's region
         @is_running: whether the instance is in a running state
 
         @return None
         """
-        self.cache['regions'][region]['instances'][instance['id']] = instance
-        self.cache['regions'][region]['has_running_instances'] |= is_running
+        instances = self.cache['regions'][region]['instances']
+
+        instance_ix = None
+        for index, cached_instance in enumerate(instances):
+            if cached_instance["id"] == instance["id"]:
+                instance_ix = index
+                break
+
+        if instance_ix is not None:
+            instances[instance_ix] = instance
+        else:
+            instances.append(instance)
+
+        if is_running is not None:
+            self.cache['regions'][region]['has_running_instances'] |= is_running
 
 
     @synchronize_with_lock

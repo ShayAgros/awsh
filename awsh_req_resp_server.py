@@ -6,6 +6,7 @@ import threading
 import time
 import logging
 import errno
+from typing import Tuple
 
 AWHS_PORT=7007
 AWSH_ACK_STR='AWSHACK'
@@ -31,8 +32,9 @@ class request_item:
         self.connection = connection
         return
 
-    def complete_request(self, reply = '', success = True):
-        self.connection.complete_request(self.request_id, reply, success)
+    def complete_request(self, reply = '', status = 0):
+        self.connection.complete_request(self.request_id, reply, status)
+
 
 class awsh_connection(asynchat.async_chat):
 
@@ -87,7 +89,9 @@ class awsh_connection(asynchat.async_chat):
             try:
                 self.request_object.process_request(request_command[1:], req_item)
             except Exception as e:
-                req_item.complete_request(reply=str(e), success=False)
+                self.logger.error("Got an exception for request")
+                self.logger.error(str(e.with_traceback))
+                req_item.complete_request(reply=str(e), status = 1)
 
             return
 
@@ -106,6 +110,7 @@ class awsh_connection(asynchat.async_chat):
         self.push(reply_bytes)
         # close connection on your side
         # self.close()
+
 
 class awsh_req_server(asyncore.dispatcher):
     """This server waits for requests and passes them to @request_object using
@@ -199,27 +204,44 @@ class awsh_req_client(asynchat.async_chat):
         # print('client: received data ' + str(data), flush=True)
 
         self.logger.debug(f'Received partial mesasge of len {len(data)}')
-        self.received_reply.append(str(data, 'ascii'))
+        self.received_reply.append(data)
+
+
+    def _find_next_space(self, msg : str) -> Tuple[str, str]:
+        """Parse the next word starting @msg start up until you next space, and
+        return remaining string after that (not including the space)"""
+        i = 0
+        for char in msg:
+            if char == ' ':
+                break
+
+            i = i + 1
+
+        return msg[:i], msg[i + 1:]
 
     def found_terminator(self):
 
         logger = self.logger
 
-        received_reply = ' '.join(self.received_reply)
+        decoded_data_arr = map(lambda e : str(e, 'ascii'), self.received_reply)
+        reply = ''.join(decoded_data_arr)
         self.received_reply = []
 
-        logger.debug(f"Received reply of length {len(received_reply)}")
+        logger.debug(f"Received reply of length {len(reply)}")
 
         pending_commands = self.pending_commands
 
-        reply = received_reply.split()
-        req_id = reply[0]
+        # print(reply)
 
-        reply_type = reply[1]
-
+        # reply = received_reply.split()
+        req_id, msg = self._find_next_space(reply)
+        print("req_id", req_id)
         if not req_id in pending_commands:
             logger.error("Received reply for unexisting req id {}".format(req_id))
             return
+
+        reply_type, msg = self._find_next_space(msg)
+        print("reply_type", reply_type)
 
         if reply_type == AWSH_ACK_STR:
             if pending_commands[req_id]['ack']:
@@ -240,13 +262,14 @@ class awsh_req_client(asynchat.async_chat):
 
         logger.debug("client: Received response. req id: {}".format(req_id))
 
-        request_success = bool(int(reply[2]))
+        status, msg = self._find_next_space(msg)
+        request_success = int(status)
 
         # parse the response
-        if len(reply) > 3:
-            request_response = ''.join(reply[3:])
-        else:
-            request_response = ''
+        # if len(reply) > 3:
+            # request_response = ''.join(reply[3:])
+        # else:
+            # request_response = ''
 
         # logger.debug(f"received reply_type: {request_response}")
         response_handler = pending_commands[req_id]['res_handler']
@@ -254,7 +277,8 @@ class awsh_req_client(asynchat.async_chat):
         if not response_handler:
             logger.debug('No respond handler. Doing nothing with the reply')
         else:
-            response_handler(self, response_success = request_success, server_reply = request_response)
+            response_handler(self, request_success, msg)
+
 
     def send_request(self, request, response_handler = None):
 

@@ -1,19 +1,37 @@
 from typing import Tuple, List
 
-class awsh_ui:
+class awsh_ui():
     """This defines an interface for interacting with the user
     with awsh scripts"""
 
-    def multiline_selection(self, title, choices):
+    def multiline_selection(self, title : str, choices : List) -> Tuple[bool, List]:
         """Present a multi selection choice to the user and returns either
-        the value of the callback registered with it
+        the value or the callback registered with it
 
         Keyword Arguments:
         title -- the title for the selection
-        choices -- A list of entries. Each entry can be a word or
-        a dictionary of the form { entry, color, callback }
+        choices -- A list of entries. Each entry can be a string or
+        a dictionary with the following keys:
+            { 
+                entry : the entry string
+                color : a color to prepend to the option
+                submenu (optional): a tuple representing a new (title, choices)
+                                     values which represents a nested list
+            }
+
+        Return: The function returns True/Fasle depending on whether the user
+                chose an entry of existed abnormally. Also a tuple of the indices in all lists.
+                e.g. if the user chose entry 2, which didn't have 'new_list'
+                option then the function returns True, 1
+
+                If entry 2 is a nested list and the user chose entry 1 in it
+                then the function returns True, (1, 0)
+
+                If user pressed escape then the function returns False, Any
+                (the second argument can be ignored)
         """
         raise Exception("Function not implemented")
+
 
     def multiwindow_selection(self, title : str, choices : list,
                               max_choice_depth : bool = None) -> Tuple[bool, List[int]]:
@@ -24,13 +42,12 @@ class awsh_ui:
         title -- the title for the selection
         choices -- A list of entries. Each entry might be either:
             - string: the entry string. No subentries exist
-            - tumple (string, list): an entry with subentries
+            - tuple (string, list): an entry with subentries
         max_choice_depth -- maximum choices depth from which a user can choose
 
         returns the a list of indices of chosen in each window
         """
         raise Exception("Function not implemented")
-
 
 
 class awsh_rofi (awsh_ui):
@@ -45,7 +62,7 @@ class awsh_rofi (awsh_ui):
 
     def multiline_selection(self, title : str, choices):
         """Present a multi selection choice to the user and returns either
-        the value of the callback registered with it
+        the value or the callback registered with it
 
         Keyword Arguments:
         title -- the title for the selection

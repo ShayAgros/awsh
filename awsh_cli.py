@@ -98,7 +98,7 @@ def create_intefaces(stdscr, output_stream, args):
     if not args.force_aws_ec2_mode:
         # client mode
         try:
-            client = awsh_client(region, None, None, None, synchronous=True)
+            client = awsh_client(region, None, None, synchronous=True)
             regions = get_current_state()
 
             logger.debug("Contacted running server")

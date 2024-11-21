@@ -32,12 +32,9 @@ class ec2_instance(QWidget):
         win_layout.setSpacing(1)
 
         self.createUpperLayout()
-        # self.createMiddleLayout()
         self.createBottomLayout()
 
-        # win_layout.addLayout(self.upper)
         win_layout.addWidget(self.upper_container)
-        # win_layout.addLayout(self.middle)
         win_layout.addWidget(self.bottom_container)
 
         self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed,
@@ -102,23 +99,6 @@ class ec2_instance(QWidget):
         self.instance_desc = instance_desc
 
 
-    def createMiddleLayout(self):
-        """This part contains the intance description"""
-        instance_name = QLabel("Test instance")
-        instance_name.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-        instance_type = QLabel("c5n.18xlarge")
-        instance_type.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-        middle = QVBoxLayout()
-        middle.addWidget(instance_name)
-        middle.addWidget(instance_type)
-
-        self.middle = middle
-        self.instance_name = instance_name
-        self.instance_type = instance_type
-
-
     def __has_multiple_cards(self):
         """returns whether this instance has multiple cards attached to it"""
         return 'p4d' in self.instance['instance_type']
@@ -177,3 +157,11 @@ class ec2_instance(QWidget):
         self.upper_container.setProperty("selected", False)
         self.upper_container.style().polish(self.upper_container)
         self.update()
+
+
+    def setIndex(self, index : int):
+        self.ins_ix_label.setText(str(index))
+
+
+    def clearIndex(self):
+        self.ins_ix_label.setText("-")

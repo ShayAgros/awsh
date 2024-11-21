@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 
+from typing import Any, List, Tuple
 import boto3
 import botocore.exceptions
 
-import sys
+from awsh_utils import get_os_by_ami_name
+
 import json
 
 prefrred_regions = [
@@ -179,6 +181,7 @@ class Aws:
                 'architecture'      : instance.architecture,
                 'ami_id'            : instance.image_id,
                 'ami_name'          : instance.image.name,
+                'distro'            : get_os_by_ami_name(instance.image.name),
                 'key'               : instance.key_name,
                 'public_dns'        : instance.public_dns_name,
                 'public_ip'         : instance.public_ip_address,
@@ -191,7 +194,7 @@ class Aws:
 
         return ret_instances, has_running_instances
 
-    def query_instances_in_regions(self, regions):
+    def query_instances_in_regions(self, regions : list) -> Tuple[dict, Any]:
         instances = dict()
         has_running_instances = dict()
 
@@ -292,6 +295,86 @@ class Aws:
 
         return all_pass_sec_group
 
+
+    def create_ssh_icmp_enabled_sg_vpc(self, vpc):
+        """Create a security group for a given VPC which allows to pass ssh
+        traffic"""
+
+        sec_group_name = 'ssh_icmp_traffic'
+        sec_groups = vpc.security_groups
+        sec_groups.filter( GroupNames=[ sec_group_name ],)
+        if (not sec_groups):
+           raise Exception("Security group already exists")
+
+        sec_group_access_params = {
+            'IpPermissions' : [
+                {
+                    'IpProtocol' : 'tcp',
+                    'FromPort': 22,
+                    'ToPort': 22,
+                    'IpRanges': [
+                        {
+                            'CidrIp': '0.0.0.0/0',
+                            'Description': 'all_ipv4'
+                        },
+                    ],
+                    'Ipv6Ranges': [
+                        {
+                            'CidrIpv6': '::/0',
+                            'Description': 'all_ipv6'
+                        },
+                    ],
+                },
+                {
+                    'IpProtocol' : 'icmp',
+                    'FromPort': -1,
+                    'ToPort': -1,
+                    'IpRanges': [
+                        {
+                            'CidrIp': '0.0.0.0/0',
+                            'Description': 'all_ipv4'
+                        },
+                    ],
+                    'Ipv6Ranges': [
+                        {
+                            'CidrIpv6': '::/0',
+                            'Description': 'all_ipv6'
+                        },
+                    ],
+                }
+            ]
+        }
+
+        sec_group_name_params = {
+                'Description' : 'Pass SSH and ICMP traffic',
+                'GroupName' : sec_group_name,
+                }
+
+        # try:
+        sec_group = vpc.create_security_group(**sec_group_name_params)
+        sec_group.authorize_ingress(**sec_group_access_params)
+        # except:
+            # sec_group = None
+
+        return sec_group
+
+    def create_ssh_icmp_enabled_sg_region(self, region):
+        ec2 = boto3.resource('ec2', region_name=region)
+
+        for vpc in ec2.vpcs.all():
+            self.create_ssh_icmp_enabled_sg_vpc(vpc)
+
+
+    def create_ssh_icmp_enabled_sg_all_regions(self):
+        session = boto3.Session()
+
+        for region in list(session.get_available_regions('ec2')):
+            print("Adding ssh icmp enabled sg in", region)
+            try:
+                self.create_ssh_icmp_enabled_sg_region(region)
+            except:
+                print("Failed")
+
     def parse_eni_metadata(self, interface):
         """Parse the metadata of ec2 interface object. This means extracting
         only the information needed for awsh functionality
@@ -381,7 +464,10 @@ class Aws:
             eni = ec2.NetworkInterface(eni_id)
             eni.detach()
 
-        return enis_to_detach
+        instances, _ = self.get_instance_in_region(region, instance_id=instance_id)
+
+        return enis_to_detach, instances[0]
+
 
     def _get_interface_in_region(self, region):
         ec2 = boto3.resource('ec2', region_name=region)
@@ -562,68 +648,71 @@ class Aws:
 
         return subnet
 
-    def connect_eni_to_instance(self, region, device_index, network_card_index = 0, instance_id = None, eni_id = None):
+    def connect_eni_to_instance(self, region : str, instance_id : str, eni_id : str,
+                                device_index : int, network_card_index = 0):
 
         ec2 = boto3.resource('ec2', region_name=region)
 
-        if not instance_id:
-            running_instances = self.get_instance_in_region(region)
+        # TODO: this all should be move to some CLI program. This file should be
+        # backend only
+        # if not instance_id:
+            # running_instances, _ = self.get_instance_in_region(region)
 
-            instance_choices = list()
-            for key in running_instances.keys():
-                name = running_instances[key]['name']
-                size = running_instances[key]['instance_type']
+            # instance_choices = list()
+            # for instance in running_instances:
+                # id   = instance['id']
+                # name = instance['name']
+                # size = instance['instance_type']
 
-                instance_choices.append('{} {} {}'.format(key, name, size))
+                # instance_choices.append('{} {} {}'.format(id, name, size))
 
-            if not instance_choices:
-                print("No running instances")
-                return
+            # if not instance_choices:
+                # print("No running instances")
+                # return
 
-            instance = choose_from_list('Choose instance to attach interface to', instance_choices)
-            instance_tuple = instance.split()
+            # instance = choose_from_list('Choose instance to attach interface to', instance_choices)
+            # instance_tuple = instance.split()
 
-            instance_id = instance_tuple[0]
+            # instance_id = instance_tuple[0]
 
-        if not eni_id:
-            instance_az = running_instances[instance_id]['placement']['AvailabilityZone']
-            print("You chose", instance_id, "from az", instance_az)
+        # if not eni_id:
+            # running_instances, _ = self.get_instance_in_region(region)
+            # instance_az = running_instances[instance_id]['placement']['AvailabilityZone']
+            # print("You chose", instance_id, "from az", instance_az)
 
 
-            available_interfaces = ec2.network_interfaces.filter(
-                        Filters=[
-                            {
-                                'Name': 'availability-zone',
-                                'Values': [
-                                    instance_az,
-                                ]
-                            },
-                            {
-                                'Name': 'status',
-                                'Values': [
-                                    'available',
-                                ]
-                            },
-                        ],
-                )
+            # available_interfaces = ec2.network_interfaces.filter(
+                        # Filters=[
+                            # {
+                                # 'Name': 'availability-zone',
+                                # 'Values': [
+                                    # instance_az,
+                                # ]
+                            # },
+                            # {
+                                # 'Name': 'status',
+                                # 'Values': [
+                                    # 'available',
+                                # ]
+                            # },
+                        # ],
+                # )
 
-            interfaces_choices = list()
-            for interface in available_interfaces:
-                eni_id = interface.id
-                eni_description = interface.description
+            # interfaces_choices = list()
+            # for interface in available_interfaces:
+                # eni_id = interface.id
+                # eni_description = interface.description
 
-                interfaces_choices.append('{} {}'.format(eni_id, eni_description))
+                # interfaces_choices.append('{} {}'.format(eni_id, eni_description))
 
-            if not interfaces_choices:
-                print("No available interface, please create some")
-                return
+            # if not interfaces_choices:
+                # print("No available interface, please create some")
+                # return
 
-            interface = choose_from_list('Choose an interface to attach to the interface', interfaces_choices)
-            interface_tuple = interface.split()
+            # interface = choose_from_list('Choose an interface to attach to the interface', interfaces_choices)
+            # interface_tuple = interface.split()
 
-            eni_id = interface_tuple[0]
-
-        print("You chose to attach interface", eni_id)
+            # eni_id = interface_tuple[0]
 
         eni = ec2.NetworkInterface(eni_id)
         eni.attach(
@@ -632,12 +721,9 @@ class Aws:
             NetworkCardIndex = network_card_index
             )
 
-        # TODO: do we desire to update the instance's properties ? Should it
-        # really happen in this function ?
-        # instances = self.get_instance_in_region(region, instance_id=instance_id)
-        # if not region in self.regions:
-            # self.regions[region] = dict()
-        # self.regions[region]['instances'].update(instances)
+        instances, _ = self.get_instance_in_region(region, instance_id=instance_id)
+
+        return instances[0]
 
     def terminate_instance(self, instance_id, region):
         ec2 = boto3.resource('ec2', region_name=region)
@@ -664,7 +750,7 @@ class Aws:
                 # TODO: this can fail, need to check how to handle this error
                 instance.wait_until_running()
                 instances, _ = self.get_instance_in_region(region, instance_id=instance_id)
-                return instances[instance_id]
+                return instances[0]
         except botocore.exceptions.ClientError as error:
             if error.response['Error']['Code'] == 'InvalidInstanceID.NotFound':
                 print("No client with instance id", instance_id, "exists in region", region)
@@ -721,7 +807,16 @@ class Aws:
 
 def main():
 
-    ec2 = Aws()
+    # ec2 = Aws()
+    ec2 = boto3.resource('ec2', region_name="us-east-1")
+    vpc = list(ec2.vpcs.all())[0]
+
+    print(vpc.id)
+    subnets = _find_free_subnets(vpc, 24, 16)
+    print(subnets)
+
+    # ec2.create_ssh_icmp_enabled_sg_all_regions()
+    # ec2.create_ssh_icmp_enabled_sg_region("il-central-1")
 
     # subnets = ec2.query_subnets_in_regions(["eu-west-1"])
     # interfaces = ec2.query_interfaces_in_regions(["eu-west-1"])
@@ -743,8 +838,7 @@ def main():
     # ec2.connect_eni_to_instance('eu-west-1')
 
     # print(json.dumps(ec2.start_instance('i-0ffff7e457b178ba8', 'us-west-2', wait_to_start=True), indent=4))
-    # ec2.query_all_instances()
-    print(json.dumps(ec2.query_all_instances(), indent = 4))
+    # print(json.dumps(ec2.get_instance_in_region("eu-west-1"), indent = 4))
     # print(json.dumps(ec2.query_all_instances(), indent=4))
     # ec2.print_online_instances()
 

@@ -1,5 +1,3 @@
-import boto3
-
 # TODO: maybe move all such exceptions to Aws class, and have your own defined
 # exceptions ?
 import botocore.exceptions as be
@@ -7,7 +5,6 @@ import threading
 import signal
 import time
 from datetime import datetime
-import psutil
 import json
 
 from pid import PidFile
@@ -73,9 +70,12 @@ class awsh_server:
 
         # the cache would hold the server's state
         self.cache = awsh_cache()
-        self.cache.read_cache()
 
         self.logger = logging.getLogger("awsh-server")
+
+        if not self.cache.read_cache():
+            self.logger.error("Failed to read cache. Terminating")
+            raise Exception("Cache is busy")
 
     def start_requests_server(self):
         if not self.req_resp_server_running:
@@ -106,6 +106,12 @@ class awsh_server:
             logger.info('asked to query region {}'.format(request[1]))
 
             instances, has_running_instances = self.ec2.query_instances_in_regions([region])
+            # TODO: Following snippet is for testings
+            # instances = {}
+            # has_running_instances = {}
+            # instances[region] = cache.get_instances(region)
+            # has_running_instances[region] = True
+
             reply = json.dumps(instances[region])
 
             cache.set_instances(instances)
@@ -120,7 +126,7 @@ class awsh_server:
             logger.info('starting instance {} in region {}'.format(instance_id, region))
             instance_info = self.ec2.start_instance(instance_id, region, wait_to_start=True)
 
-            cache.set_instance(instance_info, region, is_running=True)
+            cache.set_instance(instance_info, region, is_running=True) # type: ignore
 
             # TODO: This is wasteful to send all instances on the socket. Also
             # it allows a race. Fix it
@@ -143,7 +149,10 @@ class awsh_server:
             index       = int(request[4])
 
             logger.info(f'connecting eni {eni} to instance {instance_id} (as index {index}) in region {region}')
-            self.ec2.connect_eni_to_instance(region, index, instance_id=instance_id, eni_id=eni)
+            instance_info = self.ec2.connect_eni_to_instance(region, instance_id, eni, index)
+
+            cache.set_instance(instance_info, region)
+            reply = json.dumps(instance_info)
 
             logger.debug(f'finished connecting eni {eni} to instance {instance_id} (as index {index}) in region {region}')
         elif request[0] == str(awsh_server_commands.DETACH_ALL_ENIS):
@@ -155,10 +164,13 @@ class awsh_server:
             # what interfaces are attached. This information should already be
             # available to the server. It can specify the ENIs to detach to the
             # function
-            detached_enis = self.ec2.detach_private_enis(region, instance_id)
+            detached_enis, instance_info = self.ec2.detach_private_enis(region, instance_id)
 
-            if detached_enis:
-                reply = json.dumps(detached_enis)
+            reply_dict = {
+                "detached_enis" : detached_enis,
+                "instance" : instance_info
+            }
+            reply = json.dumps(reply_dict)
 
             logger.debug(f'detaching all enis from instance {instance_id} in region {region}')
 
@@ -196,9 +208,8 @@ class awsh_server:
 
             interfaces = self.ec2.query_interfaces_in_regions([region])
 
-            reply = json.dumps(interfaces)
-
             cache.set_interfaces(interfaces)
+            reply = json.dumps(cache.get_region_data(region))
 
         elif request[0] == str(awsh_server_commands.GET_CURRENT_REGION_STATE):
             region = request[1]
@@ -300,7 +311,7 @@ class awsh_server:
 
                 try:
                     subnets = ec2.query_all_subnets()
-                except (be.EndpointConnectionError, be.ConnectTimeoutError, be.ReadTimeoutError) as err:
+                except (be.EndpointConnectionError, be.ConnectTimeoutError, be.ReadTimeoutError):
                     logger.warning("Failed to query EC2 due to internet failure")
                     continue
 
@@ -311,7 +322,8 @@ class awsh_server:
 
             # update fail because of locking, retry again next time
             # TODO: maybe rename to something clearer
-            cache.update_cache()
+            if not cache.update_cache():
+                logger.warning("Failed to update cache. Will try next iteration")
 
         # kill request server as well
         self.req_server.handle_close()
@@ -325,7 +337,7 @@ class awsh_server:
 
     def stop_server(self):
         if self.query_info_running:
-            self.query_info_timer.stop()
+            self.query_info_timer.cancel()
             self.query_info_running = False
 
 def start_server(args):

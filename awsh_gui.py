@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 
 from PyQt5 import QtGui
-from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QFont
+from PyQt5.QtCore import QFile, QTextStream, Qt
 from PyQt5.QtWidgets import (QApplication, QWidget, QStackedLayout)
+
 import sys
 import os
 import logging
@@ -15,12 +17,13 @@ from awsh_cache import awsh_cache
 from awsh_req_resp_server import awsh_req_client
 from awsh_client import get_current_state
 
+import breeze_resources
+
 # TODO: remove all these, they are only here for testing
 import threading
 import asyncore
 
 AWSH_HOME = os.path.dirname(os.path.realpath(__file__))
-
 
 class aws_gui(QWidget):
 
@@ -80,10 +83,18 @@ class aws_gui(QWidget):
         self.setWindowIcon(QtGui.QIcon(AWSH_HOME + '/awsh_gui.png'))
         self.setGeometry(50, 200, 900, 900)
 
+        # set focus on the first region view
+        currentView_ix = self.viewStackedLayout.currentIndex()
+        # An edge case in which there are no instances at all. Weird situation
+        if self.viewStackedLayout.itemAt(currentView_ix):
+            view = self.viewStackedLayout.itemAt(currentView_ix).widget()
+            view.setFocus()
+
         connection_status = ("" if self.req_client else "not ") + "connected"
         window_title = "AWS Helper (" + connection_status + ")"
         self.setWindowTitle(window_title)
         self.show()
+
 
     def create_instances_views(self, all_regions):
         region_views = dict()
@@ -92,7 +103,6 @@ class aws_gui(QWidget):
         # use a list to affect the order in which regions are added to the
         # stacked layout
         views_with_running_instance = list()
-        views_with_running_indexed_instance = list()
         views_wo_running_instances = list()
 
         for region in all_regions:
@@ -102,13 +112,15 @@ class aws_gui(QWidget):
             region_long_name = all_regions[region].get('long_name', '')
             instances = all_regions[region]['instances']
             interfaces = all_regions[region].get('interfaces', dict())
+            subnets = all_regions[region].get('subnets', dict())
             has_running_instances = all_regions[region].get('has_running_instances', False)
 
             region_views[region] = instances_view_v2(
                     region,
                     region_long_name=region_long_name,
                     instances=instances,
-                    interfaces=interfaces)
+                    interfaces=interfaces,
+                    subnets=subnets)
 
             if has_running_instances:
                 views_with_running_instance.insert(0, region_views[region])
@@ -126,6 +138,7 @@ class aws_gui(QWidget):
         self.region_views = region_views
         self.viewStackedLayout = viewStackedLayout
 
+
     def update(self, label):
         label.setText("Updated")
 
@@ -139,9 +152,9 @@ class aws_gui(QWidget):
 
         key = e.key()
 
-        if key == Qt.Key_unknown:
+        if key == Qt.Key.Key_unknown:
             return
-        elif key == Qt.Key_Escape or e.text() == 'q':
+        elif key == Qt.Key.Key_Escape or e.text() == 'q':
             self.is_alive = False
             # if it's None then no server side exists
             if self.req_client:
@@ -165,12 +178,15 @@ class aws_gui(QWidget):
                 currentView_ix %= views_len
 
             self.viewStackedLayout.setCurrentIndex(currentView_ix)
+            view = self.viewStackedLayout.itemAt(currentView_ix).widget()
+            view.setFocus()
         else:
+            pass
             # pass the key input to child
-            currentView = self.viewStackedLayout.currentWidget()
-            keyPressFunc = getattr(currentView, 'keyPressEvent', None)
-            if callable(keyPressFunc):
-                currentView.keyPressEvent(e)
+            # currentView = self.viewStackedLayout.currentWidget()
+            # keyPressFunc = getattr(currentView, 'keyPressEvent', None)
+            # if callable(keyPressFunc):
+                # currentView.keyPressEvent(e)
         # elif len(e.text()) == 1 and e.text() in 'hjkl':
             # letter = e.text()
             # label_len = len(self.labels)
@@ -196,8 +212,18 @@ class aws_gui(QWidget):
 if __name__ == '__main__':
     app = QApplication(sys.argv)
 
+    # configure stylesheet for the whole application. Taken from
+    # https://github.com/Alexhuszagh/BreezeStyleSheets#pyqt5-installation
+    file = QFile(":/dark/stylesheet.qss")
+    file.open(QFile.ReadOnly | QFile.Text)
+    stream = QTextStream(file)
+    app.setStyleSheet(stream.readAll())
+
+    # font = QFont("FiraCode Nerd Font Mono", 10)
+    # app.setFont(font)
+
     coloredlogs.DEFAULT_LOG_FORMAT = '%(asctime)s %(name)-20s %(levelname)s %(message)s'
-    logger = logging.getLogger("awsh_req_client")
+    logger = logging.getLogger()
     coloredlogs.install(level='DEBUG', logger=logger, stream=sys.stdout)
 
     cache = awsh_cache()

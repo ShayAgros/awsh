@@ -1,13 +1,13 @@
+from typing import Union, Callable
+
 from awsh_req_resp_server import awsh_req_client
 from awsh_server import awsh_server_commands
-from awsh_utils import find_in_saved_logins, clean_saved_logins
+from awsh_utils import (find_in_saved_logins,
+                        awsh_get_subnet_color)
 from awsh_ui import awsh_rofi
 
 import json
 import re
-
-# TODO: unify it to a single interface
-SUBNET_COLORS = ['#1f77b4', '#aec7e8', '#ff7f0e', '#ffbb78', '#2ca02c', '#98df8a', '#d62728', '#ff9896', '#9467bd', '#c5b0d5', '#8c564b', '#c49c94', '#e377c2', '#f7b6d2', '#7f7f7f', '#c7c7c7', '#bcbd22', '#dbdb8d', '#17becf', '#9edae5',]
 
 
 # TODO: this probably needs to be integrated into the client
@@ -30,21 +30,23 @@ def get_current_state(req_client = None):
     return json.loads(server_reply)
 
 
+CLIENT_CALLBACK=Callable[[int, int, Union[dict,None]], None]
+
 class awsh_client:
     """This class is the counterpart of awsh_server. Its purpose is to send
     requests to it and process its reply. It shouldn't be used without a running
     server"""
 
-    def __init__(self, region, instances, interfaces, subnet_color_dict,
-                 synchronous=False):
+    def __init__(self, region : str, instances : list,
+                 interfaces : dict,
+                 synchronous : bool = False):
         # state variable. Holds current regions state
         self.region = region
 
         self.instances = instances
         self.interfaces = interfaces
-        self.subnet_color_dict = subnet_color_dict
 
-        self.remove_used_interfaces_from_pool()
+        # self.remove_used_interfaces_from_pool()
 
         self.next_req_id = 0
 
@@ -75,7 +77,7 @@ class awsh_client:
         """Mark interfaces which are attached to interfaces as used. This way
         they won't be presented as an option when connecting an interface"""
 
-        for instance in self.instances.values():
+        for instance in self.instances:
             try:
                 for interface in instance['interfaces']:
                     eni = interface['id']
@@ -89,7 +91,7 @@ class awsh_client:
 
 
     def send_client_command(self, command, arguments, request_id,
-                            handler=None):
+                            handler : Union[CLIENT_CALLBACK, None] = None):
         try:
             req_client = awsh_req_client(synchronous=self.synchronous)
             request = '{} {}'.format(command, arguments)
@@ -100,53 +102,97 @@ class awsh_client:
             # (does it access some variables in the parent function ? If not
             # worth moving it to have smaller indentation)
             def handle_reply(connection : awsh_req_client,
-                             response_success : bool,
+                             response_status : int,
                              server_reply : str):
 
                 # we maintain a connection per-request
-                connection.close()
+                if not self.synchronous:
+                    connection.close()
 
-                if not response_success:
+                if response_status != 0:
                     print("request id {} failed with status {} and reply {}".format(
-                          request_id, response_success, server_reply))
+                          request_id, response_status, server_reply))
+
+                server_dict = dict()
 
                 # transform reply back to json format
-                if response_success and server_reply != "":
+                if response_status == 0 and server_reply != "":
                     try:
-                        server_reply = json.loads(server_reply)
+                        server_dict = json.loads(server_reply)
                     except:
                         # TODO: Check that it's actually a json error. This is
                         # just ridicules that you fail for any exception
                         print("Couldn't transform reply into json. reply:")
                         print(server_reply)
-                        server_reply = dict()
-                elif response_success:
-                    # TODO: this is ugly. Fix this
-                    server_reply = dict()
+                        server_dict = dict()
 
                 if handler is None:
                     if not self.synchronous:
                         return
 
-                    return response_success, server_reply
+                    return response_status, server_dict
 
-                handler(request_id=request_id,
-                        response_success=response_success,
-                        server_reply=server_reply)
+                handler(request_id,
+                        response_status,
+                        server_dict)
 
                 return
 
             if not self.synchronous:
                 req_client.send_request(request, handle_reply)
             else:
-                response_success, server_reply = req_client.send_request_blocking(request)
-                return handle_reply(None, response_success, server_reply)
+                response_status, server_reply = req_client.send_request_blocking(request)
+                return handle_reply(None, response_status, server_reply)
 
         except Exception as exc:
             print("aws_client: failed to start connection")
             raise exc
             return
         pass
+
+    
+    def set_instance_state(self, instance, state : int,
+                           finish_callback : Union[CLIENT_CALLBACK, None]):
+        """Modify the current instance state
+        state: one of fallowing values
+            0: start instance
+            1: shutdown instance
+            2: reboot instance
+            3: terminate instance"""
+
+        commands = awsh_server_commands
+
+        # currently these two commands alone are supported
+        if state == 0:
+            command = commands.START_INSTANCE
+        elif state == 1:
+            command = commands.STOP_INSTANCE
+        else:
+            if finish_callback:
+                finish_callback(0, 1, None)
+            return
+
+        def set_state_cb(request_id, status, instances):
+            if status != 0:
+                return
+
+            # NULL or empty dictionary means the sever has no update for
+            # our instances state
+            if instances:
+                self.instances = instances
+
+            if finish_callback:
+                finish_callback(request_id, status, instances)
+
+        # assign request id
+        request_id = self.get_req_id()
+        argument_string="{} {}".format(self.region, instance['id'])
+        self.send_client_command(
+                command=command,
+                arguments=argument_string, request_id=request_id,
+                handler=set_state_cb)
+
+        return request_id
 
 
     def start_instance(self, instance, finish_callback = None):
@@ -157,10 +203,14 @@ class awsh_client:
         # isn't updated across invocations
         def update_interface_state(finish_callback):
             """Update the available interface lists"""
+            # TODO: this is a silly solution. The server is the only one aware
+            # that interfaces have been removed. it makes more sense that it'd
+            # push a new state instead of the client guessing that
+            # for eni, interface in self.interfaces.items():
+                # self.interfaces[eni]['status'] = "available"
+
             if finish_callback is not None:
                 finish_callback()
-            for eni, interface in self.interfaces.items():
-                self.interfaces[eni]['status'] = "available"
 
             self.remove_used_interfaces_from_pool()
 
@@ -189,7 +239,7 @@ class awsh_client:
         return request_id
 
 
-    def refresh_instances(self, finish_callback=None):
+    def refresh_instances(self, finish_callback : Union[CLIENT_CALLBACK, None]):
         """Send the server a request to query all instances in the region configured
         with this awsh_client instance.
 
@@ -199,50 +249,18 @@ class awsh_client:
         # assign request id
         request_id = self.get_req_id()
 
+        def update_instances(request_id : int, status : int, instances : dict):
+            if status == 0:
+                self.instances = instances
+
+            if finish_callback is not None:
+                finish_callback(request_id, status, instances)
+
         # Send command to server
         argument_string="{}".format(self.region)
         self.send_client_command(command=awsh_server_commands.QUERY_REGION,
-                arguments=argument_string, request_id=request_id, handler=finish_callback)
+                arguments=argument_string, request_id=request_id, handler=update_instances)
 
-        return request_id
-
-
-    def __get_available_interface_in_az_list(self, az):
-        """This functions returns a list containing the available ENIs
-        in the provided availability zone
-        @az - the availability zone to search available ENIs in
-
-        @returns a @enis_ids list of dictionaries where
-           entry is a dictionary with the entries
-           @entry : eni description
-           @interface : interface object
-           @color : the subnet color"""
-
-        interfaces = self.interfaces
-        subnet_color_dict = self.subnet_color_dict
-
-        possible_interfaces = []
-        for eni, interface in interfaces.items():
-            status = interface['status']
-            if_az = interface['az']
-            if status == 'available' and if_az == az:
-                possible_if = {
-                    "entry" : interface['description'] or eni,
-                    "interface" : interface
-                }
-
-                subnet_id = interface['subnet']
-                if subnet_id not in subnet_color_dict:
-                    new_color = SUBNET_COLORS[ len(subnet_color_dict) % len(SUBNET_COLORS) ]
-                    subnet_color_dict[subnet_id] = new_color
-
-                subnet_color = subnet_color_dict[subnet_id]
-
-                possible_if['color'] = subnet_color
-
-                possible_interfaces.append(possible_if)
-
-        return possible_interfaces
 
     def _create_enis(self, subnet : dict, enis_names : list,
                      finish_callback = None):
@@ -297,12 +315,9 @@ class awsh_client:
                 { 'interface_nr': 0 }
             )
 
-            subnet_color_dict = self.subnet_color_dict
-            if not subnet_id in subnet_color_dict:
-                new_color = SUBNET_COLORS[ len(subnet_color_dict) % len(SUBNET_COLORS) ]
-                subnet_color_dict[subnet_id] = new_color
+            subnet_color = awsh_get_subnet_color(self.region, subnet_id)
 
-            subnet['color'] = subnet_color_dict[subnet_id]
+            subnet['color'] = subnet_color
             nr_infs = subnet['interface_nr'] = subnet['interface_nr'] + 1
             az_subnets[subnet_id] = subnet
 
@@ -362,65 +377,74 @@ class awsh_client:
 
         return None, None
 
-    def _connect_eni(self, instance, interface, finish_callback):
-        interface["status"] = 'in-use'
-        # increase the number of enis connected to client
-        num_interface = instance['num_interfaces']
-        instance["num_interfaces"] = num_interface + 1
-
+    def connect_eni(self, instance_id, eni_id, device_ix, finish_callback):
         # assign request id
         request_id = self.get_req_id()
 
-        argument_string="{} {} {} {}".format(self.region, instance["id"], interface["id"], num_interface)
+        argument_string="{} {} {} {}".format(self.region, instance_id, eni_id, device_ix)
         self.send_client_command(command=awsh_server_commands.CONNECT_ENI,
                                  arguments=argument_string, request_id=request_id, handler=finish_callback)
 
-        return request_id, interface
+        return request_id
+
+    def create_subnet(self, az : str, finish_callback):
+        az_letter = self.region[-1]
+
+        subnet_stub = "{subnet_ix}"
+        new_subnet_name = f"subnet-{az_letter}-{subnet_stub}"
+        enis_names = f"testing-{az_letter}{subnet_stub}-i1 testing-{az_letter}{subnet_stub}-i2"
+        print(f"Creating subnet by name templace: {new_subnet_name}")
+        print(f"Creating enis: by name templates {enis_names}")
+
+        request_id = self.get_req_id()
+        argument_string="{} {} {} {}".format(self.region, az, new_subnet_name, enis_names)
+        self.send_client_command(command=awsh_server_commands.CREATE_ENI_AND_SUBNET,
+                                 arguments=argument_string, request_id=request_id, handler=finish_callback)
+
+        return request_id
 
 
-    def connect_eni(self, instance, finish_callback=None):
+    # def connect_eni(self, instance, finish_callback=None):
 
-        instance_az = instance['placement']['AvailabilityZone']
+        # instance_az = instance['placement']['AvailabilityZone']
 
-        r = awsh_rofi()
-        interfaces = self.interfaces
+        # r = awsh_rofi()
+        # interfaces = self.interfaces
 
-        possible_interfaces = self.__get_available_interface_in_az_list(instance_az)
+        # possible_interfaces = self.__get_available_interface_in_az_list(instance_az)
 
-        new_eni_entry = { "entry" : "Create new interface" }
-        possible_interfaces.append(new_eni_entry)
+        # new_eni_entry = { "entry" : "Create new interface" }
+        # possible_interfaces.append(new_eni_entry)
 
-        # choose an interface from possibilities
-        is_error, index = r.multiline_selection('Choose interface to attach', possible_interfaces)
+        # # choose an interface from possibilities
+        # is_error, index = r.multiline_selection('Choose interface to attach', possible_interfaces)
 
-        # user canceled the choice
-        if is_error:
-            return None, None
+        # # user canceled the choice
+        # if is_error:
+            # return None, None
 
-        if index < (len(possible_interfaces) - 1):
-            # Chose an existing interface
-            interface = possible_interfaces[index]["interface"]
-            print("Chose ENI", interface["id"])
+        # if index < (len(possible_interfaces) - 1):
+            # # Chose an existing interface
+            # interface = possible_interfaces[index]["interface"]
+            # print("Chose ENI", interface["id"])
 
-            return self._connect_eni(instance, interface, finish_callback)
+            # return self._connect_eni(instance, interface, finish_callback)
 
-        else: # new interface
-            subnet = self._choose_subnet(instance_az, finish_callback)
-            # new subnet was created
-            if subnet is None:
-                req_id = self.next_req_id
-                self.next_req_id = req_id + 1
-                return req_id, ""
+        # else: # new interface
+            # subnet = self._choose_subnet(instance_az, finish_callback)
+            # # new subnet was created
+            # if subnet is None:
+                # req_id = self.next_req_id
+                # self.next_req_id = req_id + 1
+                # return req_id, ""
 
-            # TODO: need to implement choosing exisitng subnet
-            return None
+            # # TODO: need to implement choosing exisitng subnet
+            # return None
 
-        return request_id, interface
+        # return request_id, interface
 
 
-    def detach_all_enis(self, instance, finish_callback):
-        instance_id = instance['id']
-
+    def detach_all_enis(self, instance_id, finish_callback):
         # assign request id
         request_id = self.get_req_id()
 
@@ -478,3 +502,22 @@ class awsh_client:
     def get_instance_info_from_server_by_address(self, instance_dns: str):
         """Query AWSH server for a information about an instance based on its
            DNS address"""
+
+
+def testing():
+    import logging, coloredlogs, sys
+
+    coloredlogs.DEFAULT_LOG_FORMAT = '%(asctime)s %(name)-20s %(levelname)s %(message)s'
+    coloredlogs.install(level=logging.DEBUG, stream=sys.stdout)
+
+    client = awsh_client("ap-northeast-2", [], {},  synchronous=True)
+
+    def print_output(request_id,
+                     response_success,
+                     server_reply):
+        print(json.dumps(server_reply, indent=4))
+
+    client.refresh_instances(finish_callback=print_output)
+
+if __name__ == '__main__':
+    testing()

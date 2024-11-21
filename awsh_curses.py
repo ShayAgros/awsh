@@ -3,7 +3,7 @@ import sys
 import logging
 import coloredlogs
 import io
-from typing import Any, Tuple, List
+from typing import Any, Tuple, List, Union
 
 from awsh_ui import awsh_ui
 
@@ -161,8 +161,9 @@ class awsh_curses(awsh_ui):
         return choices
 
 
+    # TODO: fixing the return value typing.. it looks pretty aweful
     def multiwindow_selection(self, title : str, choices : list,
-                              max_choice_depth : int = 0) -> Tuple[bool, List[int]]:
+                              max_choice_depth : int = 0) -> Union[Tuple[bool, List[int]], Tuple[Any, None]]:
         """Present a multi-window choice, meaning that each choice
         in the first window will present a different set of choices
         in the second window and so on.
